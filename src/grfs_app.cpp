@@ -11,7 +11,39 @@
 #include <rex/filesystem.h>
 #include <rex/logging.h>
 
+REXCVAR_DECLARE(uint32_t, user_language);
+
+#if defined(__PROSPERO__)
+extern "C" int sceSystemServiceParamGetInt(int param_id, int* value);
+#endif
+
 namespace {
+
+#if defined(__PROSPERO__)
+// The console's language (SCE_SYSTEM_SERVICE_PARAM_ID_LANG) as an Xbox 360
+// language ID (XLanguage), for the game's text and voices.
+uint32_t ConsoleLanguage() {
+  constexpr int kParamIdLang = 1;
+  int lang = 1;
+  if (sceSystemServiceParamGetInt(kParamIdLang, &lang) != 0) {
+    return 1;
+  }
+  switch (lang) {
+    case 0: return 2;             // Japanese
+    case 2: case 22: return 4;    // French, French (Canada)
+    case 3: case 20: return 5;    // Spanish, Spanish (Latin America)
+    case 4: return 3;             // German
+    case 5: return 6;             // Italian
+    case 7: case 17: return 9;    // Portuguese, Portuguese (Brazil)
+    case 8: return 12;            // Russian
+    case 9: return 7;             // Korean
+    case 10: return 8;            // Chinese (Traditional)
+    case 11: return 10;           // Chinese (Simplified)
+    case 16: return 11;           // Polish
+    default: return 1;            // English and the rest
+  }
+}
+#endif
 
 // The settings a first start writes (grfs.toml beside the app; edit it over
 // FTP). Bump the version to replace an older file.
@@ -45,6 +77,11 @@ void GrfsApp::OnConfigurePaths(rex::PathConfig& paths) {
   paths.user_data_root = app / "UserData";
   paths.cache_root = app / "UserData" / "cache";
 
+#if defined(__PROSPERO__)
+  // The console's language, unless grfs.toml sets user_language (read after).
+  rex::cvar::SetFlagByName("user_language", std::to_string(ConsoleLanguage()));
+#endif
+
   // DualSense button prompts and high-resolution textures, if installed.
   if (std::filesystem::is_directory(app / "textures", ec)) {
     rex::cvar::SetFlagByName("texture_replacement_path", (app / "textures").string());
@@ -64,5 +101,6 @@ void GrfsApp::OnConfigurePaths(rex::PathConfig& paths) {
 
 void GrfsApp::OnPostLoadXexImage() {
   REXLOG_INFO("==== Ghost Recon: Future Soldier PS5 port (test build) ====");
+  REXLOG_INFO("language: {}", REXCVAR_GET(user_language));
   REXLOG_INFO("game folder: {}", game_data_root().string());
 }
