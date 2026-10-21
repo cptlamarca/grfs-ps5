@@ -1,0 +1,5 @@
+# Codegen output (from the disc's default.xex) and build trees
+/generated/*
+!/generated/rexglue.cmake
+/out/
+*.log
