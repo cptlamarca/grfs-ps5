@@ -5,7 +5,10 @@
 
 #include <filesystem>
 #include <fstream>
+#include <sstream>
 #include <string>
+#include <utility>
+#include <vector>
 
 #include <rex/cvar.h>
 #include <rex/filesystem.h>
@@ -63,6 +66,53 @@ constexpr char kDefaultConfig[] =
     "# (the PS5's GPU driver: one plain buffer for the Xbox 360's memory, no sparse binding)\n"
     "vulkan_sparse_shared_memory = false\n";
 
+// Settings tests on the console, one per start: each line of tests.txt (beside
+// the app) is a list of settings ("key = value", separated by ';'); each start
+// takes the next line (tests_next.txt counts) and writes them into grfs.toml.
+// What the start tested, for the log.
+std::string test_profile;
+
+void ApplyNextTestProfile(const std::filesystem::path& app, const std::filesystem::path& config) {
+  std::ifstream list(app / "tests.txt");
+  std::vector<std::string> profiles;
+  for (std::string line; std::getline(list, line);) {
+    if (!line.empty() && line[0] != '#') profiles.push_back(line);
+  }
+  if (profiles.empty()) return;
+  size_t next = 0;
+  std::ifstream(app / "tests_next.txt") >> next;
+  const size_t index = next % profiles.size();
+  std::ofstream(app / "tests_next.txt", std::ios::trunc) << index + 1 << "\n";
+  test_profile = std::to_string(index + 1) + "/" + std::to_string(profiles.size()) + ": " +
+                 profiles[index];
+
+  // The defaults, the profile's keys replaced.
+  std::vector<std::pair<std::string, std::string>> settings;
+  std::string item;
+  for (std::istringstream items(profiles[index]); std::getline(items, item, ';');) {
+    const size_t eq = item.find('=');
+    if (eq == std::string::npos) continue;
+    auto trim = [](std::string s) {
+      s.erase(0, s.find_first_not_of(" \t"));
+      s.erase(s.find_last_not_of(" \t\r") + 1);
+      return s;
+    };
+    settings.emplace_back(trim(item.substr(0, eq)), trim(item.substr(eq + 1)));
+  }
+  std::ostringstream out;
+  std::istringstream defaults(kDefaultConfig);
+  for (std::string line; std::getline(defaults, line);) {
+    bool replaced = false;
+    for (const auto& [key, value] : settings) {
+      replaced |= line.rfind(key + " ", 0) == 0 || line.rfind(key + "=", 0) == 0;
+    }
+    if (!replaced) out << line << "\n";
+  }
+  out << "# test " << test_profile << "\n";
+  for (const auto& [key, value] : settings) out << key << " = " << value << "\n";
+  std::ofstream(config, std::ios::trunc) << out.str();
+}
+
 }  // namespace
 
 void GrfsApp::OnConfigurePaths(rex::PathConfig& paths) {
@@ -97,10 +147,12 @@ void GrfsApp::OnConfigurePaths(rex::PathConfig& paths) {
   if (!current) {
     std::ofstream(paths.config_path, std::ios::trunc) << kDefaultConfig;
   }
+  ApplyNextTestProfile(app, paths.config_path);
 }
 
 void GrfsApp::OnPostLoadXexImage() {
   REXLOG_INFO("==== Ghost Recon: Future Soldier PS5 port (test build) ====");
   REXLOG_INFO("language: {}", REXCVAR_GET(user_language));
+  if (!test_profile.empty()) REXLOG_INFO("settings test {}", test_profile);
   REXLOG_INFO("game folder: {}", game_data_root().string());
 }
