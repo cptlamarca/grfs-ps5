@@ -18,6 +18,9 @@ class GrfsApp : public rex::ReXApp {
   // For game patches, which run on guest threads.
   static GrfsApp* instance() { return instance_; }
 
+  // The game folder, for the UI.
+  std::filesystem::path GameFolder() const { return game_data_root(); }
+
   void OnConfigurePaths(rex::PathConfig& paths) override;
   void OnPostLoadXexImage() override;
 

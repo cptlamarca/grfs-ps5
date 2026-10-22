@@ -16,6 +16,10 @@
 #include <rex/system/xmemory.h>
 
 #include "grfs_app.h"
+#include "trophy_sound.h"
+
+REXCVAR_DEFINE_BOOL(trophy_sound_test, false, "GRFS",
+                    "Play the trophy sound when the main menu first loads, to hear it");
 
 namespace {
 
@@ -98,6 +102,13 @@ void UiCommand(PPCContext& ctx, uint8_t* base) {
     }
     if (!std::strcmp(command, "ScreenLoaded")) {
       RenameMainMenuEntry(rex::system::kernel_state()->memory());
+      static bool sound_tested = false;
+      if (REXCVAR_GET(trophy_sound_test) && !sound_tested) {
+        sound_tested = true;
+        if (GrfsApp* app = GrfsApp::instance()) {
+          PlayTrophySound(app->GameFolder());
+        }
+      }
     }
   }
   ui_command_original(ctx, base);

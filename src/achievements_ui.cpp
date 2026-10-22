@@ -18,6 +18,9 @@
 #include <rex/runtime.h>
 #include <rex/system/flags.h>
 
+#include "grfs_app.h"
+#include "trophy_sound.h"
+
 namespace {
 
 // The fonts are rasterized for 2160p and scaled down to the display.
@@ -459,6 +462,9 @@ void AchievementToast::OnDraw(ImGuiIO& io) {
     while (!queue_.empty()) {
       if (!shown_since_) {
         shown_since_ = now;
+        if (GrfsApp* app = GrfsApp::instance()) {
+          PlayTrophySound(app->GameFolder());
+        }
       }
       age = std::chrono::duration<float>(now - *shown_since_).count();
       if (age < kDisplaySeconds) {
