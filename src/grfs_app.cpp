@@ -14,6 +14,10 @@
 #include <rex/filesystem.h>
 #include <rex/logging.h>
 
+#include <imgui.h>
+
+#include "achievements_ui.h"
+
 REXCVAR_DECLARE(uint32_t, user_language);
 
 #if defined(__PROSPERO__)
@@ -155,4 +159,51 @@ void GrfsApp::OnPostLoadXexImage() {
   REXLOG_INFO("language: {}", REXCVAR_GET(user_language));
   if (!test_profile.empty()) REXLOG_INFO("settings test {}", test_profile);
   REXLOG_INFO("game folder: {}", game_data_root().string());
+}
+
+std::unique_ptr<rex::ui::WindowedApp> GrfsApp::Create(rex::ui::WindowedAppContext& ctx) {
+  return std::unique_ptr<GrfsApp>(new GrfsApp(ctx, "grfs", PPCImageConfig));
+}
+
+void GrfsApp::OnConfigureFonts(ImFontAtlas* atlas) {
+  // Noto Sans (SIL Open Font License, metadata/fonts/OFL.txt) at 2160p sizes
+  // for the achievements screen: the default font has no accented letters
+  // big enough for a TV.
+  static const ImWchar kLatin[] = {0x0020, 0x00FF, 0x2018, 0x201D, 0};
+  auto load = [&](const char* file, float size) -> ImFont* {
+    std::filesystem::path path = game_data_root() / "metadata" / "fonts" / file;
+    if (!std::filesystem::exists(path)) {
+      REXLOG_WARN("Font {} missing", path.string());
+      return nullptr;
+    }
+    ImFontConfig config;
+    config.OversampleH = config.OversampleV = 2;
+    return atlas->AddFontFromFileTTF(path.string().c_str(), size, &config, kLatin);
+  };
+  font_ = load("NotoSans-Regular.ttf", 56.0f);
+  title_font_ = load("NotoSans-Bold.ttf", 88.0f);
+}
+
+std::unique_ptr<rex::ui::ImGuiDialog> GrfsApp::CreateAchievementsOverlay() {
+  if (!imgui_drawer() || !runtime() || !runtime()->kernel_state()) {
+    return nullptr;
+  }
+  return std::make_unique<AchievementsScreen>(this, imgui_drawer(), immediate_drawer(), runtime(),
+                                              &achievements(), font_, title_font_);
+}
+
+std::unique_ptr<rex::ui::AchievementNotificationDialog>
+GrfsApp::CreateAchievementNotificationDialog() {
+  if (!imgui_drawer() || !runtime()) {
+    return nullptr;
+  }
+  return std::make_unique<AchievementToast>(imgui_drawer(), immediate_drawer(), runtime(), font_,
+                                            title_font_);
+}
+
+void GrfsApp::OnPreLaunchModule() {
+  // The XEX only has the achievements in English.
+  if (IsPortuguese()) {
+    achievements().LoadMetadataFile(game_data_root() / "metadata" / "achievements_pt.toml");
+  }
 }

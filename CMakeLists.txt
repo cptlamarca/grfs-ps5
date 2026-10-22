@@ -24,7 +24,7 @@ endif()
 
 include(generated/rexglue.cmake)
 
-add_executable(grfs src/main.cpp src/grfs_app.cpp)
+add_executable(grfs src/main.cpp src/grfs_app.cpp src/achievements_ui.cpp src/achievements_menu.cpp)
 rexglue_setup_target(grfs GPU_PLUGINS xenos)
 if(REXSDK_DIR AND TARGET imgui)
     # SDK source tree: ImGui (built into the runtime) is not on the public
