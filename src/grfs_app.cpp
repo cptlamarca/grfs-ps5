@@ -72,7 +72,9 @@ constexpr char kDefaultConfig[] =
     "# (one Vulkan submission per frame: mid-frame vkQueueSubmit stalls for ms on the PS5)\n"
     "vulkan_submit_on_primary_buffer_end = false\n"
     "# (GPU copies of memory kept between frames: 16 KB host pages watched by all their guest pages)\n"
-    "clear_memory_page_state = false\n";
+    "clear_memory_page_state = false\n"
+    "# (AMD FSR 1: sharper upscaling of 2080x1200 to the 4K screen)\n"
+    "present_effect = \"fsr\"\n";
 
 // Settings tests on the console, one per start: each line of tests.txt (beside
 // the app) is a list of settings ("key = value", separated by ';'); each start
