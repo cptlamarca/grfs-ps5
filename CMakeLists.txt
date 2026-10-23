@@ -25,6 +25,7 @@ endif()
 include(generated/rexglue.cmake)
 
 add_executable(grfs src/main.cpp src/grfs_app.cpp src/achievements_ui.cpp src/achievements_menu.cpp
+    src/progression_hooks.cpp
     src/trophy_sound.cpp)
 rexglue_setup_target(grfs GPU_PLUGINS xenos)
 if(REXSDK_DIR AND TARGET imgui)
