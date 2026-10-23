@@ -20,10 +20,11 @@ class GrfsApp : public rex::ReXApp {
   // For game patches, which run on guest threads.
   static GrfsApp* instance() { return instance_; }
 
-  // The overlay screens, from the main menu: the trophies, or the "help keep
-  // me active" one.
+  // The overlay screens, from the main menu: the trophies, the "help keep me
+  // active" one or the donors.
   void ShowTrophies();
   void ShowSupport();
+  void ShowDonors();
 
   // The game folder, for the UI.
   std::filesystem::path GameFolder() const { return game_data_root(); }
@@ -40,7 +41,8 @@ class GrfsApp : public rex::ReXApp {
 
  private:
   static inline GrfsApp* instance_ = nullptr;
-  std::atomic<bool> support_shown_{false};
+  enum class Overlay { kTrophies, kSupport, kDonors };
+  std::atomic<Overlay> overlay_{Overlay::kTrophies};
   ImFont* font_ = nullptr;
   ImFont* title_font_ = nullptr;
 };

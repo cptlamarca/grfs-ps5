@@ -4,10 +4,10 @@
 usage: news_server.py [--port 37001] [--file news.json] [--password SECRET]
 
 The game (option news_url = "http://HOST:PORT/news.txt") downloads
-/news.txt, and /support.txt for its "help keep me active" screen; the page at
-http://HOST:PORT/ (user "admin", the password given, or the NEWS_PASSWORD
-environment variable) edits both, kept in --file (and support.json next to
-it).
+/news.txt, /support.txt for its "help keep me active" screen and /donors.txt
+for its donors screen; the page at http://HOST:PORT/ (user "admin", the
+password given, or the NEWS_PASSWORD environment variable) edits them, kept
+in --file (and support.json and donors.json next to it).
 """
 
 import argparse
@@ -57,6 +57,10 @@ button.danger { background:transparent; color:var(--danger); border:1px solid va
   <div class="row"><div><label>Link (vira o QR code)</label><input id="s_url" placeholder="https://..."></div></div>
   <div class="row"><div><label>Texto</label><textarea id="s_text"></textarea></div></div>
 </div>
+<h1>DOADORES</h1>
+<p class="hint">A aba DOADORES do Ghost Feed, na ordem da lista. A mensagem é opcional.</p>
+<div id="donors"></div>
+<p><button onclick="addDonor()">+ Novo doador</button></p>
 <h1>GHOST FEED</h1>
 <p class="hint">Mensagens que o jogo mostra em COMMUNITY MESSAGES. A primeira da lista
 aparece primeiro. O jogo baixa de novo a cada minuto.</p>
@@ -101,21 +105,48 @@ function add() { const now = new Date(); now.setMinutes(now.getMinutes() - now.g
   news.unshift({time: now.toISOString().slice(0, 16), category: "", author: "", title: "", text: ""});
   render(); status("não salvo"); }
 function status(text) { document.getElementById("status").textContent = text; }
+let donors = [];
+function renderDonors() {
+  const list = document.getElementById("donors"); list.replaceChildren();
+  donors.forEach((d, i) => {
+    const bind = (input, key) => { input.value = d[key] || "";
+      input.oninput = () => { d[key] = input.value; status("não salvo"); }; return input; };
+    list.append(el("div", {className: "card"},
+      el("div", {className: "row"},
+        field("Nome", bind(el("input"), "name")),
+        field("Mensagem", bind(el("input"), "message"))),
+      el("div", {className: "actions"},
+        el("button", {textContent: "↑", onclick: () => moveDonor(i, -1)}),
+        el("button", {textContent: "↓", onclick: () => moveDonor(i, 1)}),
+        el("button", {className: "danger", textContent: "Apagar",
+                      onclick: () => { donors.splice(i, 1); renderDonors(); status("não salvo"); }}))));
+  });
+  if (!donors.length) list.append(el("p", {className: "hint", textContent: "Nenhum doador."}));
+}
+function moveDonor(i, d) { const j = i + d; if (j < 0 || j >= donors.length) return;
+  [donors[i], donors[j]] = [donors[j], donors[i]]; renderDonors(); status("não salvo"); }
+function addDonor() { donors.unshift({name: "", message: ""}); renderDonors(); status("não salvo"); }
 const SUPPORT = ["title", "url", "text"];
 async function save() {
   const support = {};
   SUPPORT.forEach(k => support[k] = document.getElementById("s_" + k).value);
   const put = (path, body) => fetch(path, {method: "PUT", headers: {"Content-Type": "application/json"},
                                            body: JSON.stringify(body)});
-  const results = await Promise.all([put("api/news", news), put("api/support", support)]);
+  const results = await Promise.all([put("api/news", news), put("api/support", support),
+                                     put("api/donors", donors)]);
   status(results.every(r => r.ok) ? "salvo às " + new Date().toLocaleTimeString() : "erro ao salvar");
 }
 fetch("api/news").then(r => r.json()).then(n => { news = n; render(); });
+fetch("api/donors").then(r => r.json()).then(d => { donors = d; renderDonors(); });
 fetch("api/support").then(r => r.json()).then(s => SUPPORT.forEach(k => {
   const input = document.getElementById("s_" + k);
   input.value = s[k] || ""; input.oninput = () => status("não salvo"); }));
 </script></body></html>
 """
+
+
+def one_line(text):
+    return " ".join(str(text).split())
 
 
 def escape(text):
@@ -125,7 +156,9 @@ def escape(text):
 class Store:
     def __init__(self, path):
         self.path = path
-        self.support_path = os.path.join(os.path.dirname(os.path.abspath(path)), "support.json")
+        folder = os.path.dirname(os.path.abspath(path))
+        self.support_path = os.path.join(folder, "support.json")
+        self.donors_path = os.path.join(folder, "donors.json")
         self.lock = threading.Lock()
 
     def load(self):
@@ -170,6 +203,26 @@ class Store:
                 json.dump(clean, f, ensure_ascii=False, indent=1)
             os.replace(tmp, self.support_path)
 
+    def load_donors(self):
+        with self.lock:
+            try:
+                with open(self.donors_path, encoding="utf-8") as f:
+                    return json.load(f)
+            except FileNotFoundError:
+                return []
+
+    def save_donors(self, donors):
+        clean = [{"name": one_line(d.get("name", ""))[:64], "message": one_line(d.get("message", ""))[:200]}
+                 for d in donors if isinstance(d, dict) and str(d.get("name", "")).strip()]
+        with self.lock:
+            tmp = self.donors_path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(clean, f, ensure_ascii=False, indent=1)
+            os.replace(tmp, self.donors_path)
+
+    def donors_text(self):
+        return "".join(f"{d['name']}\t{d['message']}\n" for d in self.load_donors())
+
     def support_text(self):
         support = self.load_support()
         if not support.get("title"):
@@ -213,6 +266,8 @@ def make_handler(store, password):
         def do_GET(self):
             if self.path == "/news.txt":
                 self.send(200, store.feed())
+            elif self.path == "/donors.txt":
+                self.send(200, store.donors_text())
             elif self.path == "/support.txt":
                 text = store.support_text()
                 self.send(200 if text else 404, text or "not set")
@@ -220,16 +275,17 @@ def make_handler(store, password):
                 if self.authorized():
                     self.send(200, PAGE.replace("%CATEGORIES%", json.dumps(CATEGORIES)),
                               "text/html; charset=utf-8")
-            elif self.path in ("/api/news", "/api/support"):
+            elif self.path in ("/api/news", "/api/support", "/api/donors"):
                 if self.authorized():
-                    data = store.load() if self.path == "/api/news" else store.load_support()
+                    data = {"/api/news": store.load, "/api/support": store.load_support,
+                            "/api/donors": store.load_donors}[self.path]()
                     self.send(200, json.dumps(data, ensure_ascii=False),
                               "application/json; charset=utf-8")
             else:
                 self.send(404, "not found")
 
         def do_PUT(self):
-            if self.path not in ("/api/news", "/api/support"):
+            if self.path not in ("/api/news", "/api/support", "/api/donors"):
                 self.send(404, "not found")
                 return
             if not self.authorized():
@@ -240,10 +296,10 @@ def make_handler(store, password):
                 return
             try:
                 data = json.loads(self.rfile.read(length))
-                if self.path == "/api/news":
+                if self.path in ("/api/news", "/api/donors"):
                     if not isinstance(data, list):
                         raise ValueError
-                    store.save(data)
+                    (store.save if self.path == "/api/news" else store.save_donors)(data)
                 else:
                     if not isinstance(data, dict):
                         raise ValueError

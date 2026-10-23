@@ -48,27 +48,46 @@ std::string RenamedPool() {
 }
 
 // Main.feu's goDLC (DOWNLOADABLE CONTENT, renamed in the Language files)
-// opens its submenu with Xbox LIVE, else asks to sign in to it. Its body (a
-// DefineFunction2 action without parameters) starts sending the game the
-// goDLC command instead, which opens the "help keep me active" screen.
-// Its name and its parameter count (0).
-constexpr std::string_view kGoDlc("goDLC\0\0\0", 8);
-// push "Main", "goDLC", "Send", 3; fscommand2; pop; return undefined.
-constexpr std::string_view kGoDlcBody(
-    "\x96\x18\x00" "\x00Main\0" "\x00goDLC\0" "\x00Send\0" "\x07\x03\x00\x00\x00"
-    "\x2d\x17" "\x96\x01\x00\x03\x3e",
-    34);
+// opens its submenu with Xbox LIVE, else asks to sign in to it; the Ghost
+// Feed's MULTIPLAYER CHALLENGES (renamed DONORS) opens its screen with Xbox
+// LIVE too. Their functions (DefineFunction2 actions) start sending the game
+// a command instead, which opens the "help keep me active" screen or the
+// donors one.
+struct Rewrite {
+  std::string_view name;
+  std::string_view command;
+};
+constexpr Rewrite kRewrites[] = {{"goDLC", "goDLC"}, {"onBtnMPChallengesActivate", "goDonors"}};
 
-void PatchDlcEntry(char* data, size_t size, size_t at) {
-  // 0x8e, u16 size, the name, u16 parameters, u8 registers, u16 flags, u16
-  // code size, the code.
-  size_t body = at + 3 + 6 + 2 + 1 + 2 + 2;
-  if (at < 2 || body > size) {
+// push "Main", command, "Send", 3; fscommand2; pop; return undefined.
+std::string SendBody(std::string_view command) {
+  std::string push = std::string("\0Main\0", 6) + '\0' + std::string(command) + '\0' +
+                     std::string("\0Send\0\x07\x03\0\0\0", 11);
+  return std::string{'\x96', char(push.size()), '\0'} + push +
+         std::string("\x2d\x17\x96\x01\x00\x03\x3e", 7);
+}
+
+// The DefineFunction2 action at data[at] (0x8e, u16 size, the name, u16
+// parameter count, u8 registers, u16 flags, the parameters (u8 register, a
+// name), u16 code size, the code) starts with body.
+void RewriteFunction(char* data, size_t size, size_t at, std::string_view body) {
+  size_t p = at + 3;
+  p += strnlen(data + p, size - p) + 1;
+  if (p + 5 > size) {
     return;
   }
-  size_t code_size = uint8_t(data[body - 2]) | uint8_t(data[body - 1]) << 8;
-  if (code_size >= kGoDlcBody.size() && body + code_size <= size) {
-    std::memcpy(data + body, kGoDlcBody.data(), kGoDlcBody.size());
+  size_t parameters = uint8_t(data[p]) | uint8_t(data[p + 1]) << 8;
+  p += 5;
+  for (size_t i = 0; i < parameters && p < size; ++i) {
+    p += 1 + strnlen(data + p + 1, size - p - 1) + 1;
+  }
+  if (p + 2 > size) {
+    return;
+  }
+  size_t code_size = uint8_t(data[p]) | uint8_t(data[p + 1]) << 8;
+  p += 2;
+  if (code_size >= body.size() && p + code_size <= size) {
+    std::memcpy(data + p, body.data(), body.size());
   }
 }
 
@@ -103,11 +122,15 @@ void RenameMainMenuEntry(rex::memory::Memory* memory) {
           std::memcpy(data + at, renamed.data(), renamed.size());
           ++count;
         }
-        // (the action's code and u16 size before the name)
-        for (size_t at = region.find(kGoDlc); at != std::string_view::npos;
-             at = region.find(kGoDlc, at + 1)) {
-          if (at >= 3 && uint8_t(data[at - 3]) == 0x8e) {
-            PatchDlcEntry(data, info.region_size, at - 3);
+        for (const Rewrite& rewrite : kRewrites) {
+          const std::string body = SendBody(rewrite.command);
+          std::string name = std::string(rewrite.name) + '\0';
+          for (size_t at = region.find(name); at != std::string_view::npos;
+               at = region.find(name, at + 1)) {
+            // (the action's code and u16 size before the name)
+            if (at >= 3 && uint8_t(data[at - 3]) == 0x8e) {
+              RewriteFunction(data, info.region_size, at - 3, body);
+            }
           }
         }
       }
@@ -129,11 +152,15 @@ void UiCommand(PPCContext& ctx, uint8_t* base) {
       }
       return;
     }
-    // DOWNLOADABLE CONTENT (its text renamed in the Language files) opens
-    // the "help keep me active" screen.
-    if (!std::strcmp(command, "goDLC")) {
+    // DOWNLOADABLE CONTENT and MULTIPLAYER CHALLENGES (their texts renamed in
+    // the Language files) open the "help keep me active" and donors screens.
+    if (!std::strcmp(command, "goDLC") || !std::strcmp(command, "goDonors")) {
       if (GrfsApp* app = GrfsApp::instance()) {
-        app->ShowSupport();
+        if (!std::strcmp(command, "goDLC")) {
+          app->ShowSupport();
+        } else {
+          app->ShowDonors();
+        }
       }
       return;
     }

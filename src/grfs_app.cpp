@@ -192,12 +192,17 @@ void GrfsApp::OnConfigureFonts(ImFontAtlas* atlas) {
 }
 
 void GrfsApp::ShowTrophies() {
-  support_shown_ = false;
+  overlay_ = Overlay::kTrophies;
   SetAchievementsOverlayVisible(true);
 }
 
 void GrfsApp::ShowSupport() {
-  support_shown_ = true;
+  overlay_ = Overlay::kSupport;
+  SetAchievementsOverlayVisible(true);
+}
+
+void GrfsApp::ShowDonors() {
+  overlay_ = Overlay::kDonors;
   SetAchievementsOverlayVisible(true);
 }
 
@@ -205,8 +210,11 @@ std::unique_ptr<rex::ui::ImGuiDialog> GrfsApp::CreateAchievementsOverlay() {
   if (!imgui_drawer() || !runtime() || !runtime()->kernel_state()) {
     return nullptr;
   }
-  if (support_shown_) {
+  if (overlay_ == Overlay::kSupport) {
     return std::make_unique<SupportScreen>(this, imgui_drawer(), runtime(), font_, title_font_);
+  }
+  if (overlay_ == Overlay::kDonors) {
+    return std::make_unique<DonorsScreen>(this, imgui_drawer(), runtime(), font_, title_font_);
   }
   return std::make_unique<AchievementsScreen>(this, imgui_drawer(), immediate_drawer(), runtime(),
                                               &achievements(), font_, title_font_);
