@@ -136,6 +136,17 @@ REX_EXTERN(__imp__sub_881AA208);
 REX_EXTERN(__imp__sub_881719E0);
 REX_EXTERN(__imp__sub_8818C5C0);
 
+// Whether the player has a Uplay Passport (with the "UplayPassport" debug
+// option, or from the game executable), and whether the progression may go
+// past the level cap without one: the Uplay servers are gone, so always.
+REX_HOOK_RAW(sub_881ABB68) {
+  ctx.r3.u64 = 1;
+}
+
+REX_HOOK_RAW(sub_88174718) {
+  ctx.r3.u64 = 1;
+}
+
 // Whether the session ranks players (levels, XP, locked items): only online
 // sessions do, so the gunsmith and loadouts let anything be picked offline.
 REX_HOOK_RAW(sub_881AA208) {

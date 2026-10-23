@@ -45,3 +45,10 @@ REX_HOOK_RAW(sub_822EDB48) {
     ctx.r3.u64 = ctx.r3.u32 | 4;
   }
 }
+
+// Whether the player has a Uplay Passport (Ubisoft's online pass), asked by
+// the AI module: the Uplay servers are gone, so every player has one, which
+// lifts the level cap and the prompts to buy or link one.
+REX_HOOK_RAW(sub_822F6630) {
+  ctx.r3.u64 = 1;
+}
