@@ -222,17 +222,10 @@ void PatchConnectionMenu(rex::memory::Memory* memory) {
 
 void OnConnectionRequest(uint8_t* base, uint32_t type_address) {
   char* type = reinterpret_cast<char*>(base + type_address);
-  bool lan = !std::strcmp(type, kLocalText);
-  if (lan) {
+  if (!std::strcmp(type, kLocalText)) {
     // (as long as its text ID)
     std::memcpy(type, kLanType, sizeof(kLanType));
-  } else if (std::strcmp(type, kLanType)) {
-    return;
   }
-  relay::SetActive(!lan);
-  std::lock_guard<std::mutex> lock(labels_mutex);
-  on_lan = lan;
-  SetLabels(base);
 }
 
 REX_EXTERN(__imp__sub_822E4B18);
@@ -253,10 +246,19 @@ REX_HOOK_RAW(sub_822E4B18) {
     }
     return text;
   };
-  bool multiplayer =
-      argc > 1 && argument(0) == "ScreenLoaded" && argument(1) == "Multiplayer.feu";
+  std::string command = argc > 1 ? argument(0) : std::string();
+  std::string value = argc > 1 ? argument(1) : std::string();
+  // A connection choice switches the relay and the labels now: the screen
+  // shows its CONNECTION label again before the queued command comes.
+  if (command == "RequestChangeConnectionType" && (value == kLocalText || value == kLanType)) {
+    bool lan = value == kLocalText;
+    relay::SetActive(!lan);
+    std::lock_guard<std::mutex> lock(labels_mutex);
+    on_lan = lan;
+    SetLabels(base);
+  }
   __imp__sub_822E4B18(ctx, base);
-  if (multiplayer) {
+  if (command == "ScreenLoaded" && value == "Multiplayer.feu") {
     PatchConnectionMenu(rex::system::kernel_state()->memory());
   }
 }
