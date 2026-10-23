@@ -15,11 +15,8 @@
 #include <rex/system/kernel_state.h>
 #include <rex/system/xmemory.h>
 
+#include "connection_menu.h"
 #include "grfs_app.h"
-#include "trophy_sound.h"
-
-REXCVAR_DEFINE_BOOL(trophy_sound_test, false, "GRFS",
-                    "Play the trophy sound when the main menu first loads, to hear it");
 
 namespace {
 
@@ -102,12 +99,14 @@ void UiCommand(PPCContext& ctx, uint8_t* base) {
     }
     if (!std::strcmp(command, "ScreenLoaded")) {
       RenameMainMenuEntry(rex::system::kernel_state()->memory());
-      static bool sound_tested = false;
-      if (REXCVAR_GET(trophy_sound_test) && !sound_tested) {
-        sound_tested = true;
-        if (GrfsApp* app = GrfsApp::instance()) {
-          PlayTrophySound(app->GameFolder());
-        }
+      const char* screen = argc > 1 ? GuestArgument(base, argv, 1) : nullptr;
+      if (screen && !std::strcmp(screen, "Multiplayer.feu")) {
+        PatchConnectionMenu(rex::system::kernel_state()->memory());
+      }
+    } else if (!std::strcmp(command, "RequestChangeConnectionType") && argc > 1) {
+      uint32_t type = rex::memory::load_and_swap<uint32_t>(base + argv + 4);
+      if (type) {
+        OnConnectionRequest(base, type);
       }
     }
   }
