@@ -5,7 +5,8 @@
 #include <rex/system/xmemory.h>
 
 // Patches the multiplayer menu's CONNECTION choices (Local Network, Online
-// (VPS)) in Multiplayer.feu once it's loaded.
+// (VPS)) in Multiplayer.feu once it's loaded (done by the hook queueing its
+// commands).
 void PatchConnectionMenu(rex::memory::Memory* memory);
 
 // Before the game gets RequestChangeConnectionType: its argument (a guest

@@ -23,8 +23,10 @@
 #include <string_view>
 #include <vector>
 
+#include <rex/hook.h>
 #include <rex/kernel/xam/system_link_relay.h>
 #include <rex/logging.h>
+#include <rex/memory/utils.h>
 #include <rex/system/kernel_state.h>
 #include <rex/system/xmemory.h>
 
@@ -231,4 +233,30 @@ void OnConnectionRequest(uint8_t* base, uint32_t type_address) {
   std::lock_guard<std::mutex> lock(labels_mutex);
   on_lan = lan;
   SetLabels(base);
+}
+
+REX_EXTERN(__imp__sub_822E4B18);
+
+// Queues a command from a Flash screen (r5 arguments, r6 pointing to guest
+// pointers to UTF-16 strings) while its ActionScript runs. Multiplayer.feu
+// sends ScreenLoaded before it lists the connections, so they're patched
+// then, before that (the queued command comes too late).
+REX_HOOK_RAW(sub_822E4B18) {
+  uint32_t argc = ctx.r5.u32 & 0xFFFF, argv = ctx.r6.u32;
+  auto argument = [&](uint32_t index) {
+    std::string text;
+    uint32_t address = rex::memory::load_and_swap<uint32_t>(base + argv + 4 * index);
+    for (uint16_t c; address && (c = rex::memory::load_and_swap<uint16_t>(base + address)) &&
+                     text.size() < 64;
+         address += 2) {
+      text += char(c);
+    }
+    return text;
+  };
+  bool multiplayer =
+      argc > 1 && argument(0) == "ScreenLoaded" && argument(1) == "Multiplayer.feu";
+  __imp__sub_822E4B18(ctx, base);
+  if (multiplayer) {
+    PatchConnectionMenu(rex::system::kernel_state()->memory());
+  }
 }

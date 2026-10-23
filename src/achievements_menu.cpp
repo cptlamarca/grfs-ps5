@@ -99,10 +99,6 @@ void UiCommand(PPCContext& ctx, uint8_t* base) {
     }
     if (!std::strcmp(command, "ScreenLoaded")) {
       RenameMainMenuEntry(rex::system::kernel_state()->memory());
-      const char* screen = argc > 1 ? GuestArgument(base, argv, 1) : nullptr;
-      if (screen && !std::strcmp(screen, "Multiplayer.feu")) {
-        PatchConnectionMenu(rex::system::kernel_state()->memory());
-      }
     } else if (!std::strcmp(command, "RequestChangeConnectionType") && argc > 1) {
       uint32_t type = rex::memory::load_and_swap<uint32_t>(base + argv + 4);
       if (type) {
