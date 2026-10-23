@@ -6,6 +6,7 @@
 #include <cstring>
 #include <fstream>
 #include <mutex>
+#include <string>
 
 #include <rex/cvar.h>
 #include <rex/hook.h>
@@ -198,4 +199,21 @@ REX_HOOK_RAW(sub_881719E0) {
     ctx.r3.u64 = progression;
   }
   __imp__sub_881719E0(ctx, base);
+}
+
+REX_EXTERN(__imp__sub_8815B1C0);
+REX_EXTERN(__imp__sub_8815C0E8);
+
+// Starts the Ghost Feed (r3) when the player is logged in to Ubisoft's
+// servers, which ask for its news. With news of our own (news_url, in
+// src/news_hooks.cpp), it starts anyway.
+REX_HOOK_RAW(sub_8815B1C0) {
+  uint32_t feed = ctx.r3.u32;
+  __imp__sub_8815B1C0(ctx, base);
+  static const bool own_news = !rex::cvar::Query<std::string>("news_url").empty();
+  // Flags: +3272 bit 32 (the feed is off), +3273 bit 4 (started).
+  if (own_news && !(base[feed + 3272] & 32) && !(base[feed + 3273] & 4)) {
+    ctx.r3.u64 = feed;
+    __imp__sub_8815C0E8(ctx, base);
+  }
 }
