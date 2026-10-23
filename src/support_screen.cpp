@@ -201,13 +201,16 @@ void SupportScreen::OnDraw(ImGuiIO& io) {
       } catch (const std::exception&) {
         // (a link too long for a QR code: only its text)
       }
-      ImGui::SetWindowFontScale(font_scale * 0.8f);
-      ImVec2 url_size = ImGui::CalcTextSize(shown.url.c_str(), nullptr, false, qr_size);
-      ImGui::SetCursorPos(ImVec2(qr_x + std::max(0.0f, (qr_size - url_size.x) / 2.0f),
-                                 qr_y + qr_size + 24.0f * scale));
-      ImGui::PushTextWrapPos(qr_x + qr_size);
-      ImGui::TextColored(kDimText, "%s", shown.url.c_str());
-      ImGui::PopTextWrapPos();
+      // A link is also written (not a PIX payload, too long to read).
+      if (shown.url.rfind("http", 0) == 0) {
+        ImGui::SetWindowFontScale(font_scale * 0.8f);
+        ImVec2 url_size = ImGui::CalcTextSize(shown.url.c_str(), nullptr, false, qr_size);
+        ImGui::SetCursorPos(ImVec2(qr_x + std::max(0.0f, (qr_size - url_size.x) / 2.0f),
+                                   qr_y + qr_size + 24.0f * scale));
+        ImGui::PushTextWrapPos(qr_x + qr_size);
+        ImGui::TextColored(kDimText, "%s", shown.url.c_str());
+        ImGui::PopTextWrapPos();
+      }
     }
 
     // The footer: Circle, back.
