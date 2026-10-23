@@ -158,7 +158,7 @@ REX_HOOK_RAW(sub_881AA208) {
 
 // Works out what the player's progression (r3) unlocks from the ranks of its
 // classes, after the game resets or loads it. First, if the classes hold a
-// match result not added up yet, their XP is added to the totals; then each
+// match result not added up yet, the totals take it in; then each
 // class gets its total XP and its rank, capped as the game does.
 REX_HOOK_RAW(sub_881719E0) {
   if (REXCVAR_GET(system_link_progression)) {
@@ -172,11 +172,15 @@ REX_HOOK_RAW(sub_881719E0) {
     }
     if (career && career != file.counted_career && loaded_result) {
       for (uint32_t i = 0; i < kClassCount; ++i) {
-        uint32_t earned = LoadGuest32(base, progression + kClasses + i * kClassSize + kClassXp);
-        if (earned) {
-          REXKRNL_INFO("System Link progression: class {} earned {} XP", i, earned);
+        // The game adds the XP of a match to what the class had then: its
+        // total, as restored below, or nothing if the game had reset it.
+        uint32_t loaded = LoadGuest32(base, progression + kClasses + i * kClassSize + kClassXp);
+        uint32_t total = loaded >= file.totals[i] ? loaded : file.totals[i] + loaded;
+        if (total != file.totals[i]) {
+          REXKRNL_INFO("System Link progression: class {} earned {} XP", i,
+                       total - file.totals[i]);
         }
-        file.totals[i] += earned;
+        file.totals[i] = total;
       }
       file.counted_career = career;
       SaveXp();
