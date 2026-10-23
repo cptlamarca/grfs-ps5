@@ -42,7 +42,8 @@ endif()
 include(generated/aiclass_x360_f/sources.cmake)
 set(GRFS_AI_SOURCES ${GENERATED_SOURCES})
 unset(GENERATED_SOURCES)
-add_library(grfs_ai OBJECT ${GRFS_AI_SOURCES})
+# src/ai_hooks.cpp patches the module's game logic.
+add_library(grfs_ai OBJECT ${GRFS_AI_SOURCES} src/ai_hooks.cpp)
 target_include_directories(grfs_ai PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/generated/aiclass_x360_f)
 target_link_libraries(grfs_ai PRIVATE rex::runtime)
