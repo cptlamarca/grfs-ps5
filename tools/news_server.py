@@ -4,9 +4,10 @@
 usage: news_server.py [--port 37001] [--file news.json] [--password SECRET]
 
 The game (option news_url = "http://HOST:PORT/news.txt") downloads
-/news.txt; the page at http://HOST:PORT/ (user "admin", the password given,
-or the NEWS_PASSWORD environment variable) adds, edits, orders and deletes
-the messages, kept in --file.
+/news.txt, and /support.txt for its "help keep me active" screen; the page at
+http://HOST:PORT/ (user "admin", the password given, or the NEWS_PASSWORD
+environment variable) edits both, kept in --file (and support.json next to
+it).
 """
 
 import argparse
@@ -49,6 +50,13 @@ button.danger { background:transparent; color:var(--danger); border:1px solid va
        display:flex; gap:8px; align-items:center; border-top:1px solid var(--line); }
 #status { color:var(--muted); }
 </style></head><body><main>
+<h1>AJUDE A ME MANTER ATIVO</h1>
+<p class="hint">A tela que abre no menu principal: título, texto e um QR code do link.</p>
+<div class="card">
+  <div class="row"><div><label>Título</label><input id="s_title"></div></div>
+  <div class="row"><div><label>Link (vira o QR code)</label><input id="s_url" placeholder="https://..."></div></div>
+  <div class="row"><div><label>Texto</label><textarea id="s_text"></textarea></div></div>
+</div>
 <h1>GHOST FEED</h1>
 <p class="hint">Mensagens que o jogo mostra em COMMUNITY MESSAGES. A primeira da lista
 aparece primeiro. O jogo baixa de novo a cada minuto.</p>
@@ -93,12 +101,19 @@ function add() { const now = new Date(); now.setMinutes(now.getMinutes() - now.g
   news.unshift({time: now.toISOString().slice(0, 16), category: "", author: "", title: "", text: ""});
   render(); status("não salvo"); }
 function status(text) { document.getElementById("status").textContent = text; }
+const SUPPORT = ["title", "url", "text"];
 async function save() {
-  const r = await fetch("api/news", {method: "PUT", headers: {"Content-Type": "application/json"},
-                                      body: JSON.stringify(news)});
-  status(r.ok ? "salvo às " + new Date().toLocaleTimeString() : "erro ao salvar");
+  const support = {};
+  SUPPORT.forEach(k => support[k] = document.getElementById("s_" + k).value);
+  const put = (path, body) => fetch(path, {method: "PUT", headers: {"Content-Type": "application/json"},
+                                           body: JSON.stringify(body)});
+  const results = await Promise.all([put("api/news", news), put("api/support", support)]);
+  status(results.every(r => r.ok) ? "salvo às " + new Date().toLocaleTimeString() : "erro ao salvar");
 }
 fetch("api/news").then(r => r.json()).then(n => { news = n; render(); });
+fetch("api/support").then(r => r.json()).then(s => SUPPORT.forEach(k => {
+  const input = document.getElementById("s_" + k);
+  input.value = s[k] || ""; input.oninput = () => status("não salvo"); }));
 </script></body></html>
 """
 
@@ -110,6 +125,7 @@ def escape(text):
 class Store:
     def __init__(self, path):
         self.path = path
+        self.support_path = os.path.join(os.path.dirname(os.path.abspath(path)), "support.json")
         self.lock = threading.Lock()
 
     def load(self):
@@ -135,6 +151,30 @@ class Store:
             with open(tmp, "w", encoding="utf-8") as f:
                 json.dump(clean, f, ensure_ascii=False, indent=1)
             os.replace(tmp, self.path)
+
+    def load_support(self):
+        with self.lock:
+            try:
+                with open(self.support_path, encoding="utf-8") as f:
+                    return json.load(f)
+            except FileNotFoundError:
+                return {}
+
+    def save_support(self, support):
+        clean = {k: str(support.get(k, ""))[:2000] for k in ("title", "url", "text")}
+        clean["title"] = clean["title"][:128].replace("\n", " ")
+        clean["url"] = clean["url"][:512].replace("\n", "")
+        with self.lock:
+            tmp = self.support_path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(clean, f, ensure_ascii=False, indent=1)
+            os.replace(tmp, self.support_path)
+
+    def support_text(self):
+        support = self.load_support()
+        if not support.get("title"):
+            return None
+        return f"{support['title']}\n{support.get('url', '')}\n{support.get('text', '')}\n"
 
     def feed(self):
         lines = []
@@ -173,19 +213,23 @@ def make_handler(store, password):
         def do_GET(self):
             if self.path == "/news.txt":
                 self.send(200, store.feed())
+            elif self.path == "/support.txt":
+                text = store.support_text()
+                self.send(200 if text else 404, text or "not set")
             elif self.path in ("/", "/index.html"):
                 if self.authorized():
                     self.send(200, PAGE.replace("%CATEGORIES%", json.dumps(CATEGORIES)),
                               "text/html; charset=utf-8")
-            elif self.path == "/api/news":
+            elif self.path in ("/api/news", "/api/support"):
                 if self.authorized():
-                    self.send(200, json.dumps(store.load(), ensure_ascii=False),
+                    data = store.load() if self.path == "/api/news" else store.load_support()
+                    self.send(200, json.dumps(data, ensure_ascii=False),
                               "application/json; charset=utf-8")
             else:
                 self.send(404, "not found")
 
         def do_PUT(self):
-            if self.path != "/api/news":
+            if self.path not in ("/api/news", "/api/support"):
                 self.send(404, "not found")
                 return
             if not self.authorized():
@@ -195,10 +239,15 @@ def make_handler(store, password):
                 self.send(413, "too large")
                 return
             try:
-                news = json.loads(self.rfile.read(length))
-                if not isinstance(news, list):
-                    raise ValueError
-                store.save(news)
+                data = json.loads(self.rfile.read(length))
+                if self.path == "/api/news":
+                    if not isinstance(data, list):
+                        raise ValueError
+                    store.save(data)
+                else:
+                    if not isinstance(data, dict):
+                        raise ValueError
+                    store.save_support(data)
             except (ValueError, AttributeError):
                 self.send(400, "bad request")
                 return

@@ -28,6 +28,8 @@ add_executable(grfs src/main.cpp src/grfs_app.cpp src/achievements_ui.cpp src/ac
     src/progression_hooks.cpp
     src/news_hooks.cpp
     src/connection_menu.cpp
+    src/support_screen.cpp
+    src/third_party/qrcodegen/qrcodegen.cpp
     src/trophy_sound.cpp)
 rexglue_setup_target(grfs GPU_PLUGINS xenos)
 if(REXSDK_DIR AND TARGET imgui)

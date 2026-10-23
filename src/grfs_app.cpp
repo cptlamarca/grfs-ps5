@@ -17,6 +17,7 @@
 #include <imgui.h>
 
 #include "achievements_ui.h"
+#include "support_screen.h"
 
 REXCVAR_DECLARE(uint32_t, user_language);
 
@@ -190,9 +191,22 @@ void GrfsApp::OnConfigureFonts(ImFontAtlas* atlas) {
   title_font_ = load("NotoSans-Bold.ttf", 88.0f);
 }
 
+void GrfsApp::ShowTrophies() {
+  support_shown_ = false;
+  SetAchievementsOverlayVisible(true);
+}
+
+void GrfsApp::ShowSupport() {
+  support_shown_ = true;
+  SetAchievementsOverlayVisible(true);
+}
+
 std::unique_ptr<rex::ui::ImGuiDialog> GrfsApp::CreateAchievementsOverlay() {
   if (!imgui_drawer() || !runtime() || !runtime()->kernel_state()) {
     return nullptr;
+  }
+  if (support_shown_) {
+    return std::make_unique<SupportScreen>(this, imgui_drawer(), runtime(), font_, title_font_);
   }
   return std::make_unique<AchievementsScreen>(this, imgui_drawer(), immediate_drawer(), runtime(),
                                               &achievements(), font_, title_font_);

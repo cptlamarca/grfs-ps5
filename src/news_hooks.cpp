@@ -24,6 +24,8 @@
 #include <sys/time.h>
 #include <unistd.h>
 
+#include "news_hooks.h"
+
 #include <rex/cvar.h>
 #include <rex/hook.h>
 #include <rex/logging.h>
@@ -94,8 +96,55 @@ std::vector<News> ParseNews(const std::string& body) {
   return items;
 }
 
-// A plain HTTP/1.0 GET; false if the server can't be reached or doesn't
-// answer 200.
+
+// Under news_mutex.
+void StartFetch() {
+  if (news_fetching) {
+    return;
+  }
+  news_fetching = true;
+  std::thread([url = std::string(REXCVAR_GET(news_url))] {
+    std::string body;
+    bool ok = HttpGet(url, body);
+    std::vector<News> items = ok ? ParseNews(body) : std::vector<News>();
+    std::lock_guard<std::mutex> lock(news_mutex);
+    if (ok) {
+      news = std::move(items);
+      REXKRNL_INFO("News: {} messages from {}", news.size(), url);
+    } else {
+      REXKRNL_WARN("News: can't download {}", url);
+    }
+    news_ok = ok;
+    news_fetched = true;
+    news_fetching = false;
+    news_time = std::chrono::steady_clock::now();
+  }).detach();
+}
+
+uint32_t GuestString(uint8_t* base, const std::string& text) {
+  auto* memory = rex::system::kernel_state()->memory();
+  uint32_t address = memory->SystemHeapAlloc(uint32_t(text.size() + 1));
+  if (address) {
+    std::memcpy(base + address, text.c_str(), text.size() + 1);
+    news_strings.push_back(address);
+  }
+  return address;
+}
+
+void StoreGuest32(uint8_t* base, uint32_t address, uint32_t value) {
+  value = __builtin_bswap32(value);
+  std::memcpy(base + address, &value, sizeof(value));
+}
+
+uint32_t LoadGuest32(const uint8_t* base, uint32_t address) {
+  uint32_t value;
+  std::memcpy(&value, base + address, sizeof(value));
+  return __builtin_bswap32(value);
+}
+
+}  // namespace
+
+// See news_hooks.h.
 bool HttpGet(const std::string& url, std::string& body) {
   std::string rest = url;
   if (rest.rfind("http://", 0) == 0) {
@@ -151,53 +200,6 @@ bool HttpGet(const std::string& url, std::string& body) {
   body = response.substr(header_end + 4);
   return true;
 }
-
-// Under news_mutex.
-void StartFetch() {
-  if (news_fetching) {
-    return;
-  }
-  news_fetching = true;
-  std::thread([url = std::string(REXCVAR_GET(news_url))] {
-    std::string body;
-    bool ok = HttpGet(url, body);
-    std::vector<News> items = ok ? ParseNews(body) : std::vector<News>();
-    std::lock_guard<std::mutex> lock(news_mutex);
-    if (ok) {
-      news = std::move(items);
-      REXKRNL_INFO("News: {} messages from {}", news.size(), url);
-    } else {
-      REXKRNL_WARN("News: can't download {}", url);
-    }
-    news_ok = ok;
-    news_fetched = true;
-    news_fetching = false;
-    news_time = std::chrono::steady_clock::now();
-  }).detach();
-}
-
-uint32_t GuestString(uint8_t* base, const std::string& text) {
-  auto* memory = rex::system::kernel_state()->memory();
-  uint32_t address = memory->SystemHeapAlloc(uint32_t(text.size() + 1));
-  if (address) {
-    std::memcpy(base + address, text.c_str(), text.size() + 1);
-    news_strings.push_back(address);
-  }
-  return address;
-}
-
-void StoreGuest32(uint8_t* base, uint32_t address, uint32_t value) {
-  value = __builtin_bswap32(value);
-  std::memcpy(base + address, &value, sizeof(value));
-}
-
-uint32_t LoadGuest32(const uint8_t* base, uint32_t address) {
-  uint32_t value;
-  std::memcpy(&value, base + address, sizeof(value));
-  return __builtin_bswap32(value);
-}
-
-}  // namespace
 
 REX_EXTERN(__imp__sub_8243CD70);
 REX_EXTERN(__imp__sub_8243C600);

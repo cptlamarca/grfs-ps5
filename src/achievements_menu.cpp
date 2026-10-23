@@ -47,6 +47,31 @@ std::string RenamedPool() {
   return pool + std::string("xBeta____").substr(0, room);
 }
 
+// Main.feu's goDLC (DOWNLOADABLE CONTENT, renamed in the Language files)
+// opens its submenu with Xbox LIVE, else asks to sign in to it. Its body (a
+// DefineFunction2 action without parameters) starts sending the game the
+// goDLC command instead, which opens the "help keep me active" screen.
+// Its name and its parameter count (0).
+constexpr std::string_view kGoDlc("goDLC\0\0\0", 8);
+// push "Main", "goDLC", "Send", 3; fscommand2; pop; return undefined.
+constexpr std::string_view kGoDlcBody(
+    "\x96\x18\x00" "\x00Main\0" "\x00goDLC\0" "\x00Send\0" "\x07\x03\x00\x00\x00"
+    "\x2d\x17" "\x96\x01\x00\x03\x3e",
+    34);
+
+void PatchDlcEntry(char* data, size_t size, size_t at) {
+  // 0x8e, u16 size, the name, u16 parameters, u8 registers, u16 flags, u16
+  // code size, the code.
+  size_t body = at + 3 + 6 + 2 + 1 + 2 + 2;
+  if (at < 2 || body > size) {
+    return;
+  }
+  size_t code_size = uint8_t(data[body - 2]) | uint8_t(data[body - 1]) << 8;
+  if (code_size >= kGoDlcBody.size() && body + code_size <= size) {
+    std::memcpy(data + body, kGoDlcBody.data(), kGoDlcBody.size());
+  }
+}
+
 void RenameMainMenuEntry(rex::memory::Memory* memory) {
   static const std::string renamed = RenamedPool();
   static_assert(sizeof(kPoolUplay) - 1 == 40);
@@ -78,6 +103,13 @@ void RenameMainMenuEntry(rex::memory::Memory* memory) {
           std::memcpy(data + at, renamed.data(), renamed.size());
           ++count;
         }
+        // (the action's code and u16 size before the name)
+        for (size_t at = region.find(kGoDlc); at != std::string_view::npos;
+             at = region.find(kGoDlc, at + 1)) {
+          if (at >= 3 && uint8_t(data[at - 3]) == 0x8e) {
+            PatchDlcEntry(data, info.region_size, at - 3);
+          }
+        }
       }
       address = info.base_address + info.region_size;
     }
@@ -93,7 +125,15 @@ void UiCommand(PPCContext& ctx, uint8_t* base) {
   if (command) {
     if (!std::strcmp(command, "uPlayPressed")) {
       if (GrfsApp* app = GrfsApp::instance()) {
-        app->SetAchievementsOverlayVisible(true);
+        app->ShowTrophies();
+      }
+      return;
+    }
+    // DOWNLOADABLE CONTENT (its text renamed in the Language files) opens
+    // the "help keep me active" screen.
+    if (!std::strcmp(command, "goDLC")) {
+      if (GrfsApp* app = GrfsApp::instance()) {
+        app->ShowSupport();
       }
       return;
     }

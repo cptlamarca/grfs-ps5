@@ -1,6 +1,8 @@
 // Ghost Recon: Future Soldier - native PS5 port (ReXGlue runtime's PS5 layer).
 #pragma once
 
+#include <atomic>
+
 #include <rex/rex_app.h>
 
 struct ImFont;
@@ -18,6 +20,11 @@ class GrfsApp : public rex::ReXApp {
   // For game patches, which run on guest threads.
   static GrfsApp* instance() { return instance_; }
 
+  // The overlay screens, from the main menu: the trophies, or the "help keep
+  // me active" one.
+  void ShowTrophies();
+  void ShowSupport();
+
   // The game folder, for the UI.
   std::filesystem::path GameFolder() const { return game_data_root(); }
 
@@ -33,6 +40,7 @@ class GrfsApp : public rex::ReXApp {
 
  private:
   static inline GrfsApp* instance_ = nullptr;
+  std::atomic<bool> support_shown_{false};
   ImFont* font_ = nullptr;
   ImFont* title_font_ = nullptr;
 };
