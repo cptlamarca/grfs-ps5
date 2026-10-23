@@ -52,3 +52,9 @@ REX_HOOK_RAW(sub_822EDB48) {
 REX_HOOK_RAW(sub_822F6630) {
   ctx.r3.u64 = 1;
 }
+
+// Whether the player (r3) has linked a Uplay account, asked by the AI module's
+// menus, which otherwise ask to link one: as linked.
+REX_HOOK_RAW(sub_822F6810) {
+  ctx.r3.u64 = 1;
+}
