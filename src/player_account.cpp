@@ -6,7 +6,7 @@
 #include "player_account.h"
 
 #include <array>
-#include <cctype>
+#include <cstdint>
 #include <chrono>
 #include <cstring>
 #include <filesystem>
@@ -28,7 +28,9 @@
 #include "news_hooks.h"
 
 #if REX_PLATFORM_PS5
-extern "C" int sceKernelGetHwSerialNumber(char* serial);
+// (weak: checked before the call; the hardware serial number's function is
+// only in libkernel_sys, which games don't get)
+extern "C" int sceKernelGetOpenPsId(uint8_t id[16]) __attribute__((weak));
 #endif
 
 namespace {
@@ -72,20 +74,21 @@ void WriteXp(const Totals& totals, uint64_t counted) {
   std::filesystem::rename(temporary, path, error);
 }
 
-// The PS5's serial number (empty elsewhere).
+// The PS5's console ID (its OpenPSID, unique and fixed, as hex; empty
+// elsewhere), which the server knows the console by.
 std::string ReadSerialNumber() {
 #if REX_PLATFORM_PS5
-  char serial[64] = {};
-  if (sceKernelGetHwSerialNumber(serial) == 0) {
+  uint8_t id[16] = {};
+  if (sceKernelGetOpenPsId && sceKernelGetOpenPsId(id) == 0) {
+    static constexpr char kHex[] = "0123456789ABCDEF";
     std::string text;
-    for (char c : serial) {
-      if (std::isalnum(static_cast<unsigned char>(c))) {
-        text += c;
-      } else if (!c) {
-        break;
-      }
+    for (uint8_t byte : id) {
+      text += kHex[byte >> 4];
+      text += kHex[byte & 15];
     }
-    return text;
+    if (text.find_first_not_of('0') != std::string::npos) {
+      return text;
+    }
   }
 #endif
   return {};
