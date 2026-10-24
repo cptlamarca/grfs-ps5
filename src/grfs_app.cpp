@@ -17,6 +17,7 @@
 #include <imgui.h>
 
 #include "achievements_ui.h"
+#include "language_patch.h"
 #include "player_account.h"
 #include "support_screen.h"
 
@@ -246,6 +247,7 @@ GrfsApp::CreateAchievementNotificationDialog() {
 }
 
 void GrfsApp::OnPreLaunchModule() {
+  PatchLanguageFiles(game_data_root());
   StartPlayerAccount(runtime());
   // The XEX only has the achievements in English.
   if (IsPortuguese()) {

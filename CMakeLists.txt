@@ -30,6 +30,7 @@ add_executable(grfs src/main.cpp src/grfs_app.cpp src/achievements_ui.cpp src/ac
     src/connection_menu.cpp
     src/support_screen.cpp
     src/player_account.cpp
+    src/language_patch.cpp
     src/third_party/qrcodegen/qrcodegen.cpp
     src/trophy_sound.cpp)
 rexglue_setup_target(grfs GPU_PLUGINS xenos)
