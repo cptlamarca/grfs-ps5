@@ -8,16 +8,25 @@ The game (option news_url = "http://HOST:PORT/news.txt") downloads
 for its donors screen; the page at http://HOST:PORT/ (user "admin", the
 password given, or the NEWS_PASSWORD environment variable) edits them, kept
 in --file (and support.json and donors.json next to it).
+
+PS5 games register at POST /player (their console's serial number, account
+name and class XP), kept in players.json next to --file: the page lists
+them, bans them from the online (tools/system_link_relay.py --players reads
+the same file) and resets their XP.
 """
 
 import argparse
 import base64
+import re
 import datetime
 import hmac
 import http.server
 import json
 import os
 import threading
+
+CLASSES = 6
+SERIAL = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 
 CATEGORIES = ["", "MP", "SP", "CIS", "WEB", "MOB", "XBLA"]
 
@@ -50,6 +59,9 @@ button.danger { background:transparent; color:var(--danger); border:1px solid va
        display:flex; gap:8px; align-items:center; border-top:1px solid var(--line); }
 #status { color:var(--muted); }
 </style></head><body><main>
+<h1>JOGADORES</h1>
+<p class="hint">Consoles PS5 que abriram o jogo, pelo número de série. Banir bloqueia o online (VPS).</p>
+<div id="players"></div>
 <h1>AJUDE A ME MANTER ATIVO</h1>
 <p class="hint">A tela que abre no menu principal: título, texto e um QR code do link.</p>
 <div class="card">
@@ -105,6 +117,37 @@ function add() { const now = new Date(); now.setMinutes(now.getMinutes() - now.g
   news.unshift({time: now.toISOString().slice(0, 16), category: "", author: "", title: "", text: ""});
   render(); status("não salvo"); }
 function status(text) { document.getElementById("status").textContent = text; }
+let players = [];
+function renderPlayers() {
+  const list = document.getElementById("players"); list.replaceChildren();
+  players.forEach(p => {
+    const total = p.xp.reduce((a, b) => a + b, 0);
+    const reason = el("input", {placeholder: "Motivo do banimento", value: p.reason || ""});
+    const act = async (body) => {
+      const r = await fetch("api/players/" + encodeURIComponent(p.serial), {method: "PUT",
+        headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)});
+      if (r.ok) loadPlayers(); else status("erro");
+    };
+    list.append(el("div", {className: "card"},
+      el("div", {className: "row"},
+        field("Serial", el("input", {value: p.serial, readOnly: true})),
+        field("Conta", el("input", {value: p.name || "", readOnly: true})),
+        field("Status", el("input", {value: p.banned ? "BANIDO" : "ativo", readOnly: true}))),
+      el("div", {className: "row"},
+        field("XP por classe", el("input", {value: p.xp.join(" / ") + "  (total " + total + ")", readOnly: true})),
+        field("Último acesso", el("input", {value: (p.last_seen || "") + "  " + (p.ip || ""), readOnly: true}))),
+      el("div", {className: "row"}, field("Motivo", reason)),
+      el("div", {className: "actions"},
+        el("button", {textContent: "Zerar XP", onclick: () => {
+          if (confirm("Zerar o XP de " + p.serial + "?")) act({reset_xp: true}); }}),
+        p.banned
+          ? el("button", {textContent: "Desbanir", onclick: () => act({banned: false})})
+          : el("button", {className: "danger", textContent: "Banir",
+                          onclick: () => act({banned: true, reason: reason.value})}))));
+  });
+  if (!players.length) list.append(el("p", {className: "hint", textContent: "Nenhum jogador ainda."}));
+}
+function loadPlayers() { fetch("api/players").then(r => r.json()).then(p => { players = p; renderPlayers(); }); }
 let donors = [];
 function renderDonors() {
   const list = document.getElementById("donors"); list.replaceChildren();
@@ -138,6 +181,7 @@ async function save() {
 }
 fetch("api/news").then(r => r.json()).then(n => { news = n; render(); });
 fetch("api/donors").then(r => r.json()).then(d => { donors = d; renderDonors(); });
+loadPlayers();
 fetch("api/support").then(r => r.json()).then(s => SUPPORT.forEach(k => {
   const input = document.getElementById("s_" + k);
   input.value = s[k] || ""; input.oninput = () => status("não salvo"); }));
@@ -159,6 +203,7 @@ class Store:
         folder = os.path.dirname(os.path.abspath(path))
         self.support_path = os.path.join(folder, "support.json")
         self.donors_path = os.path.join(folder, "donors.json")
+        self.players_path = os.path.join(folder, "players.json")
         self.lock = threading.Lock()
 
     def load(self):
@@ -220,6 +265,51 @@ class Store:
                 json.dump(clean, f, ensure_ascii=False, indent=1)
             os.replace(tmp, self.donors_path)
 
+    def load_players(self):
+        try:
+            with open(self.players_path, encoding="utf-8") as f:
+                return json.load(f)
+        except FileNotFoundError:
+            return {}
+
+    def save_players(self, players):
+        tmp = self.players_path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(players, f, ensure_ascii=False, indent=1)
+        os.replace(tmp, self.players_path)
+
+    def register(self, serial, name, xp, ip):
+        """A game's hello: its record, with the class XP it should use now."""
+        now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+        with self.lock:
+            players = self.load_players()
+            player = players.setdefault(serial, {"serial": serial, "first_seen": now,
+                                                 "xp": [0] * CLASSES, "banned": False,
+                                                 "reason": "", "reset": False})
+            player.update(name=name or player.get("name", ""), ip=ip, last_seen=now)
+            if player.get("reset"):
+                # (the XP the page reset: the game's copy is replaced)
+                player["reset"] = False
+            elif xp:
+                player["xp"] = [max(a, b) for a, b in zip(player["xp"], xp)]
+            self.save_players(players)
+            return dict(player)
+
+    def update_player(self, serial, change):
+        with self.lock:
+            players = self.load_players()
+            player = players.get(serial)
+            if player is None:
+                return False
+            if "banned" in change:
+                player["banned"] = bool(change["banned"])
+                player["reason"] = one_line(change.get("reason", ""))[:200] if player["banned"] else ""
+            if change.get("reset_xp"):
+                player["xp"] = [0] * CLASSES
+                player["reset"] = True
+            self.save_players(players)
+            return True
+
     def donors_text(self):
         return "".join(f"{d['name']}\t{d['message']}\n" for d in self.load_donors())
 
@@ -275,16 +365,60 @@ def make_handler(store, password):
                 if self.authorized():
                     self.send(200, PAGE.replace("%CATEGORIES%", json.dumps(CATEGORIES)),
                               "text/html; charset=utf-8")
-            elif self.path in ("/api/news", "/api/support", "/api/donors"):
+            elif self.path in ("/api/news", "/api/support", "/api/donors", "/api/players"):
                 if self.authorized():
                     data = {"/api/news": store.load, "/api/support": store.load_support,
-                            "/api/donors": store.load_donors}[self.path]()
+                            "/api/donors": store.load_donors,
+                            "/api/players": lambda: sorted(store.load_players().values(),
+                                                           key=lambda p: p.get("last_seen", ""),
+                                                           reverse=True)}[self.path]()
                     self.send(200, json.dumps(data, ensure_ascii=False),
                               "application/json; charset=utf-8")
             else:
                 self.send(404, "not found")
 
+        def do_POST(self):
+            # A game's hello: "key=value" lines (serial, name, xp as six
+            # numbers), answered alike (banned, reason, xp).
+            if self.path != "/player":
+                self.send(404, "not found")
+                return
+            length = int(self.headers.get("Content-Length", "0"))
+            if length > 4096:
+                self.send(413, "too large")
+                return
+            fields = {}
+            for line in self.rfile.read(length).decode("utf-8", "replace").splitlines():
+                key, _, value = line.partition("=")
+                fields[key.strip()] = value.strip()
+            serial = fields.get("serial", "")
+            if not SERIAL.match(serial):
+                self.send(400, "bad serial")
+                return
+            try:
+                xp = [max(0, min(int(v), 10 ** 9)) for v in fields.get("xp", "").split(",") if v]
+            except ValueError:
+                xp = []
+            player = store.register(serial, one_line(fields.get("name", ""))[:64],
+                                    xp if len(xp) == CLASSES else None, self.client_address[0])
+            self.send(200, f"banned={int(player['banned'])}\nreason={player['reason']}\n"
+                           f"xp={','.join(map(str, player['xp']))}\n")
+
         def do_PUT(self):
+            if self.path.startswith("/api/players/"):
+                if not self.authorized():
+                    return
+                length = int(self.headers.get("Content-Length", "0"))
+                try:
+                    change = json.loads(self.rfile.read(min(length, 4096)))
+                    serial = self.path[len("/api/players/"):]
+                    if not isinstance(change, dict) or not store.update_player(serial, change):
+                        raise ValueError
+                except ValueError:
+                    self.send(400, "bad request")
+                    return
+                self.send(200, "ok")
+                return
             if self.path not in ("/api/news", "/api/support", "/api/donors"):
                 self.send(404, "not found")
                 return

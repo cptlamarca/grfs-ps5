@@ -29,6 +29,7 @@ add_executable(grfs src/main.cpp src/grfs_app.cpp src/achievements_ui.cpp src/ac
     src/news_hooks.cpp
     src/connection_menu.cpp
     src/support_screen.cpp
+    src/player_account.cpp
     src/third_party/qrcodegen/qrcodegen.cpp
     src/trophy_sound.cpp)
 rexglue_setup_target(grfs GPU_PLUGINS xenos)
@@ -76,3 +77,5 @@ add_custom_target(grfs_ai_module DEPENDS "${GRFS_AI_OBJECT}")
 add_dependencies(grfs grfs_ai_module)
 target_sources(grfs PRIVATE src/ai_module.cpp)
 target_link_libraries(grfs PRIVATE "${GRFS_AI_OBJECT}")
+# (sceKernelGetHwSerialNumber, for the player account)
+target_link_libraries(grfs PRIVATE kernel_sys)

@@ -144,8 +144,11 @@ uint32_t LoadGuest32(const uint8_t* base, uint32_t address) {
 
 }  // namespace
 
-// See news_hooks.h.
-bool HttpGet(const std::string& url, std::string& body) {
+namespace {
+
+// An HTTP/1.0 request (a GET, or a POST of post_body); false if the server
+// can't be reached or doesn't answer 200.
+bool HttpRequest(const std::string& url, const std::string* post_body, std::string& body) {
   std::string rest = url;
   if (rest.rfind("http://", 0) == 0) {
     rest = rest.substr(7);
@@ -182,8 +185,14 @@ bool HttpGet(const std::string& url, std::string& body) {
   setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
   std::string response;
   if (connect(fd, reinterpret_cast<sockaddr*>(&address), sizeof(address)) == 0) {
-    std::string request =
-        "GET " + path + " HTTP/1.0\r\nHost: " + host_port + "\r\nConnection: close\r\n\r\n";
+    std::string request = (post_body ? "POST " : "GET ") + path + " HTTP/1.0\r\nHost: " +
+                          host_port + "\r\nConnection: close\r\n";
+    if (post_body) {
+      request += "Content-Type: text/plain; charset=utf-8\r\nContent-Length: " +
+                 std::to_string(post_body->size()) + "\r\n\r\n" + *post_body;
+    } else {
+      request += "\r\n";
+    }
     if (send(fd, request.data(), request.size(), 0) == ssize_t(request.size())) {
       char buffer[4096];
       for (ssize_t n; (n = recv(fd, buffer, sizeof(buffer), 0)) > 0;) {
@@ -199,6 +208,17 @@ bool HttpGet(const std::string& url, std::string& body) {
   }
   body = response.substr(header_end + 4);
   return true;
+}
+
+}  // namespace
+
+// See news_hooks.h.
+bool HttpGet(const std::string& url, std::string& body) {
+  return HttpRequest(url, nullptr, body);
+}
+
+bool HttpPost(const std::string& url, const std::string& post_body, std::string& body) {
+  return HttpRequest(url, &post_body, body);
 }
 
 REX_EXTERN(__imp__sub_8243CD70);

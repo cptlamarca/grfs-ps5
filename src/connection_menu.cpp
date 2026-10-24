@@ -15,6 +15,10 @@
 
 #include "connection_menu.h"
 
+#include "achievements_ui.h"
+#include "grfs_app.h"
+#include "player_account.h"
+
 #include <algorithm>
 #include <cstring>
 #include <map>
@@ -279,15 +283,34 @@ REX_HOOK_RAW(sub_822E4B18) {
   std::string value = argc > 1 ? argument(1) : std::string();
   // A connection choice switches the relay and the labels now: the screen
   // shows its CONNECTION label again before the queued command comes.
+  bool online = false;
   if (command == "RequestChangeConnectionType" && (value == kLocalText || value == kLanType)) {
     bool lan = value == kLocalText;
     relay::SetActive(!lan);
     std::lock_guard<std::mutex> lock(labels_mutex);
     on_lan = lan;
     SetLabels(base);
+    online = !lan;
   }
   __imp__sub_822E4B18(ctx, base);
   if (command == "ScreenLoaded" && value == "Multiplayer.feu") {
     PatchConnectionMenu(rex::system::kernel_state()->memory());
+    std::lock_guard<std::mutex> lock(labels_mutex);
+    online = !on_lan;
+  }
+  // A console banned from the online is told so when it would play there.
+  std::string reason;
+  if (online && PlayerBanned(&reason)) {
+    if (GrfsApp* app = GrfsApp::instance()) {
+      bool portuguese = IsPortuguese();
+      std::string text = portuguese ? "Este console foi banido das partidas Online (VPS)."
+                                    : "This console is banned from Online (VPS) matches.";
+      if (!reason.empty()) {
+        text += std::string(portuguese ? "\n\nMotivo: " : "\n\nReason: ") + reason;
+      }
+      text += portuguese ? "\n\nA Rede Local, a campanha e o Guerrilha continuam liberados."
+                         : "\n\nLocal Network, the campaign and Guerrilla stay available.";
+      app->ShowNotice(portuguese ? "Banido do online" : "Banned from the online", text);
+    }
   }
 }

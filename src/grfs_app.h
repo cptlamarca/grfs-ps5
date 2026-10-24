@@ -2,6 +2,8 @@
 #pragma once
 
 #include <atomic>
+#include <mutex>
+#include <string>
 
 #include <rex/rex_app.h>
 
@@ -25,6 +27,8 @@ class GrfsApp : public rex::ReXApp {
   void ShowTrophies();
   void ShowSupport();
   void ShowDonors();
+  // A notice (title and text), from any thread.
+  void ShowNotice(std::string title, std::string text);
 
   // The game folder, for the UI.
   std::filesystem::path GameFolder() const { return game_data_root(); }
@@ -41,8 +45,10 @@ class GrfsApp : public rex::ReXApp {
 
  private:
   static inline GrfsApp* instance_ = nullptr;
-  enum class Overlay { kTrophies, kSupport, kDonors };
+  enum class Overlay { kTrophies, kSupport, kDonors, kNotice };
   std::atomic<Overlay> overlay_{Overlay::kTrophies};
+  std::mutex notice_mutex_;
+  std::string notice_title_, notice_text_;
   ImFont* font_ = nullptr;
   ImFont* title_font_ = nullptr;
 };

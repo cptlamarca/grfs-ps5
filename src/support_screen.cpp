@@ -418,3 +418,55 @@ void DonorsScreen::OnDraw(ImGuiIO& io) {
   ImGui::PopStyleColor();
   ImGui::PopStyleVar(2);
 }
+
+void NoticeScreen::OnDraw(ImGuiIO& io) {
+  PollPad();
+  if (closed()) {
+    return;
+  }
+  const ImVec2 display = io.DisplaySize;
+  const float scale = display.y / 1080.0f;
+  const float font_scale = scale * kFontScaleAt1080;
+
+  ImGui::SetNextWindowPos(ImVec2(0, 0), ImGuiCond_Always);
+  ImGui::SetNextWindowSize(display, ImGuiCond_Always);
+  ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
+  ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
+  ImGui::PushStyleColor(ImGuiCol_WindowBg, IM_COL32(0, 0, 0, 0));
+  constexpr ImGuiWindowFlags kFlags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
+                                      ImGuiWindowFlags_NoSavedSettings |
+                                      ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoInputs |
+                                      ImGuiWindowFlags_NoBringToFrontOnFocus;
+  if (ImGui::Begin("##grfs_notice", nullptr, kFlags)) {
+    ImDrawList* draw = ImGui::GetWindowDrawList();
+    draw->AddRectFilledMultiColor(ImVec2(0, 0), display, kBackgroundTop, kBackgroundTop,
+                                  kBackgroundBottom, kBackgroundBottom);
+    if (font_) {
+      ImGui::PushFont(font_);
+    }
+    const float left = display.x * 0.20f, width = display.x * 0.60f;
+    if (title_font_) {
+      ImGui::PushFont(title_font_);
+    }
+    ImGui::SetWindowFontScale(font_scale * 0.9f);
+    ImGui::SetCursorPos(ImVec2(left, display.y * 0.32f));
+    ImGui::PushTextWrapPos(left + width);
+    ImGui::TextColored(kText, "%s", title_.c_str());
+    ImGui::PopTextWrapPos();
+    if (title_font_) {
+      ImGui::PopFont();
+    }
+    ImGui::SetWindowFontScale(font_scale);
+    ImGui::SetCursorPos(ImVec2(left, ImGui::GetCursorPosY() + 30.0f * scale));
+    ImGui::PushTextWrapPos(left + width);
+    ImGui::TextColored(kDimText, "%s", text_.c_str());
+    ImGui::PopTextWrapPos();
+    DrawBackHint(draw, display, scale);
+    if (font_) {
+      ImGui::PopFont();
+    }
+  }
+  ImGui::End();
+  ImGui::PopStyleColor();
+  ImGui::PopStyleVar(2);
+}

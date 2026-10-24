@@ -17,6 +17,7 @@
 #include <imgui.h>
 
 #include "achievements_ui.h"
+#include "player_account.h"
 #include "support_screen.h"
 
 REXCVAR_DECLARE(uint32_t, user_language);
@@ -206,6 +207,16 @@ void GrfsApp::ShowDonors() {
   SetAchievementsOverlayVisible(true);
 }
 
+void GrfsApp::ShowNotice(std::string title, std::string text) {
+  {
+    std::lock_guard<std::mutex> lock(notice_mutex_);
+    notice_title_ = std::move(title);
+    notice_text_ = std::move(text);
+  }
+  overlay_ = Overlay::kNotice;
+  SetAchievementsOverlayVisible(true);
+}
+
 std::unique_ptr<rex::ui::ImGuiDialog> GrfsApp::CreateAchievementsOverlay() {
   if (!imgui_drawer() || !runtime() || !runtime()->kernel_state()) {
     return nullptr;
@@ -215,6 +226,11 @@ std::unique_ptr<rex::ui::ImGuiDialog> GrfsApp::CreateAchievementsOverlay() {
   }
   if (overlay_ == Overlay::kDonors) {
     return std::make_unique<DonorsScreen>(this, imgui_drawer(), runtime(), font_, title_font_);
+  }
+  if (overlay_ == Overlay::kNotice) {
+    std::lock_guard<std::mutex> lock(notice_mutex_);
+    return std::make_unique<NoticeScreen>(this, imgui_drawer(), runtime(), font_, title_font_,
+                                          notice_title_, notice_text_);
   }
   return std::make_unique<AchievementsScreen>(this, imgui_drawer(), immediate_drawer(), runtime(),
                                               &achievements(), font_, title_font_);
@@ -230,6 +246,7 @@ GrfsApp::CreateAchievementNotificationDialog() {
 }
 
 void GrfsApp::OnPreLaunchModule() {
+  StartPlayerAccount(runtime());
   // The XEX only has the achievements in English.
   if (IsPortuguese()) {
     achievements().LoadMetadataFile(game_data_root() / "metadata" / "achievements_pt.toml");

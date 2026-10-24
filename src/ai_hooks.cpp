@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <array>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <mutex>
 #include <string>
@@ -48,6 +49,9 @@ struct XpFile {
 std::mutex xp_mutex;
 bool xp_loaded = false;
 XpFile xp;
+// The file's time when last read or written: the player account
+// (src/player_account.cpp) replaces the file with the server's XP.
+std::filesystem::file_time_type xp_time;
 
 uint32_t LoadGuest32(const uint8_t* base, uint32_t address) {
   uint32_t value;
@@ -92,8 +96,11 @@ std::filesystem::path XpPath() {
 
 // Under xp_mutex.
 XpFile& Xp() {
-  if (!xp_loaded) {
+  std::error_code error;
+  auto time = std::filesystem::last_write_time(XpPath(), error);
+  if (!xp_loaded || (!error && time != xp_time)) {
     xp_loaded = true;
+    xp_time = time;
     std::ifstream file(XpPath(), std::ios::binary);
     char magic[sizeof(kXpMagic)];
     XpFile loaded;
@@ -110,10 +117,16 @@ void SaveXp() {
   std::filesystem::path path = XpPath();
   std::error_code error;
   std::filesystem::create_directories(path.parent_path(), error);
-  std::ofstream file(path, std::ios::binary | std::ios::trunc);
-  file.write(kXpMagic, sizeof(kXpMagic));
-  file.write(reinterpret_cast<const char*>(xp.totals.data()), sizeof(xp.totals));
-  file.write(reinterpret_cast<const char*>(&xp.counted_career), sizeof(xp.counted_career));
+  std::filesystem::path temporary = path;
+  temporary += ".tmp";
+  {
+    std::ofstream file(temporary, std::ios::binary | std::ios::trunc);
+    file.write(kXpMagic, sizeof(kXpMagic));
+    file.write(reinterpret_cast<const char*>(xp.totals.data()), sizeof(xp.totals));
+    file.write(reinterpret_cast<const char*>(&xp.counted_career), sizeof(xp.counted_career));
+  }
+  std::filesystem::rename(temporary, path, error);
+  xp_time = std::filesystem::last_write_time(path, error);
 }
 
 // The rank of a class with that XP, before the game caps it.

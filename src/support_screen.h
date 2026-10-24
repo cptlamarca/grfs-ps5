@@ -7,6 +7,8 @@
 #pragma once
 
 #include <cstdint>
+#include <string>
+#include <utility>
 
 #include <rex/ui/imgui_dialog.h>
 
@@ -53,6 +55,22 @@ class SupportScreen : public OverlayScreen {
 
  protected:
   void OnDraw(ImGuiIO& io) override;
+};
+
+// A title and a text, such as the online ban's notice.
+class NoticeScreen : public OverlayScreen {
+ public:
+  NoticeScreen(rex::ReXApp* app, rex::ui::ImGuiDrawer* imgui_drawer, rex::Runtime* runtime,
+               ImFont* font, ImFont* title_font, std::string title, std::string text)
+      : OverlayScreen(app, imgui_drawer, runtime, font, title_font),
+        title_(std::move(title)),
+        text_(std::move(text)) {}
+
+ protected:
+  void OnDraw(ImGuiIO& io) override;
+
+ private:
+  std::string title_, text_;
 };
 
 class DonorsScreen : public OverlayScreen {
