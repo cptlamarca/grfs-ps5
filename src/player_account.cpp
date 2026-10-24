@@ -11,6 +11,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <map>
 #include <mutex>
 #include <sstream>
 #include <string>
@@ -77,6 +78,37 @@ void WriteXp(const Totals& totals, uint64_t counted) {
   std::filesystem::rename(temporary, path, error);
 }
 
+// The decision points' choices (src/ai_hooks.cpp): "ID choice" lines.
+std::filesystem::path ChoicesPath() {
+  return rex::system::kernel_state()->content_manager()->ResolveGameUserContentPath() /
+         "system_link_choices.txt";
+}
+
+std::map<uint32_t, uint32_t> ReadChoices() {
+  std::map<uint32_t, uint32_t> choices;
+  std::ifstream file(ChoicesPath());
+  for (uint32_t id, choice; file >> id >> choice;) {
+    if (choice == 1 || choice == 2) {
+      choices.emplace(id, choice);
+    }
+  }
+  return choices;
+}
+
+void WriteChoices(const std::map<uint32_t, uint32_t>& choices) {
+  std::filesystem::path path = ChoicesPath();
+  std::filesystem::path temporary = path;
+  temporary += ".tmp";
+  {
+    std::ofstream file(temporary, std::ios::trunc);
+    for (const auto& [id, choice] : choices) {
+      file << id << ' ' << choice << '\n';
+    }
+  }
+  std::error_code error;
+  std::filesystem::rename(temporary, path, error);
+}
+
 // The PS5's console ID (its OpenPSID, unique and fixed, as hex; empty
 // elsewhere), which the server knows the console by.
 std::string ReadSerialNumber() {
@@ -109,7 +141,9 @@ std::string ReadSerialNumber() {
   return {};
 }
 
-// One hello: the server's XP replaces the file's when they differ.
+// One hello: the server's XP replaces the file's when they differ; the
+// server's choices are added to the console's (or replace them, after the
+// page reset them).
 void Sync(const std::string& url, const std::string& serial, const std::string& name) {
   Totals totals{};
   uint64_t counted = 0;
@@ -125,6 +159,14 @@ void Sync(const std::string& url, const std::string& serial, const std::string& 
     }
     request << "\n";
   }
+  const std::map<uint32_t, uint32_t> choices = ReadChoices();
+  request << "choices=";
+  bool first = true;
+  for (const auto& [id, choice] : choices) {
+    request << (first ? "" : ",") << id << ':' << choice;
+    first = false;
+  }
+  request << "\n";
 
   std::string body;
   if (!HttpPost(url, request.str(), body)) {
@@ -133,7 +175,8 @@ void Sync(const std::string& url, const std::string& serial, const std::string& 
   bool now_banned = false;
   std::string reason;
   Totals server = totals;
-  bool have_server_xp = false;
+  bool have_server_xp = false, have_server_choices = false, replace = false;
+  std::map<uint32_t, uint32_t> server_choices;
   std::istringstream lines(body);
   for (std::string line; std::getline(lines, line);) {
     size_t equals = line.find('=');
@@ -152,6 +195,30 @@ void Sync(const std::string& url, const std::string& serial, const std::string& 
         server[i] = uint32_t(std::strtoul(number.c_str(), nullptr, 10));
       }
       have_server_xp = i == kClassCount;
+    } else if (key == "choices") {
+      have_server_choices = true;
+      std::istringstream pairs(value);
+      for (std::string pair; std::getline(pairs, pair, ',');) {
+        size_t colon = pair.find(':');
+        if (colon != std::string::npos) {
+          uint32_t choice = uint32_t(std::strtoul(pair.c_str() + colon + 1, nullptr, 10));
+          if (choice == 1 || choice == 2) {
+            server_choices.emplace(uint32_t(std::strtoul(pair.c_str(), nullptr, 10)), choice);
+          }
+        }
+      }
+    } else if (key == "replace") {
+      replace = value == "1";
+    }
+  }
+  if (have_server_choices) {
+    std::map<uint32_t, uint32_t> merged = replace ? server_choices : choices;
+    if (!replace) {
+      merged.insert(server_choices.begin(), server_choices.end());
+    }
+    if (merged != choices) {
+      REXKRNL_INFO("Player account: decision point choices from the server");
+      WriteChoices(merged);
     }
   }
   if (have_server_xp && server != totals) {
@@ -189,7 +256,9 @@ void StartPlayerAccount(rex::Runtime* runtime) {
       size_t slash = news.rfind('/');
       if (slash != std::string::npos && slash > 7) {
         std::error_code error;
-        auto changed = std::filesystem::last_write_time(XpPath(), error);
+        std::error_code choices_error;
+        auto changed = std::max(std::filesystem::last_write_time(XpPath(), error),
+                                std::filesystem::last_write_time(ChoicesPath(), choices_error));
         // (every 5 minutes anyway, for bans)
         if (round % 10 == 0 || error || changed != synced) {
           // (the account of the pad of player 1, the PS5's user)
@@ -198,7 +267,8 @@ void StartPlayerAccount(rex::Runtime* runtime) {
             name = input->GetUserName(0);
           }
           Sync(news.substr(0, slash) + "/player", serial, name);
-          synced = std::filesystem::last_write_time(XpPath(), error);
+          synced = std::max(std::filesystem::last_write_time(XpPath(), error),
+                            std::filesystem::last_write_time(ChoicesPath(), choices_error));
         }
       }
       std::this_thread::sleep_for(std::chrono::seconds(30));

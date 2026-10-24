@@ -7,6 +7,7 @@
 #pragma once
 
 #include <cstdint>
+#include <filesystem>
 #include <string>
 #include <utility>
 
@@ -35,6 +36,8 @@ class OverlayScreen : public rex::ui::ImGuiDialog {
   uint16_t PollPad();
   // Whether the screen has asked to be hidden, and shouldn't be drawn.
   bool closed() const { return hidden_; }
+  // Hides the screen once every button is up.
+  void Close() { closing_ = true; }
 
   rex::ReXApp* app_;
   rex::Runtime* runtime_;
@@ -71,6 +74,29 @@ class NoticeScreen : public OverlayScreen {
 
  private:
   std::string title_, text_;
+};
+
+// A System Link decision point reached: the player picks one of its two
+// choices of items (src/ai_hooks.cpp writes the one waiting into the
+// profile, and puts the items of the choice into the class).
+class DecisionScreen : public OverlayScreen {
+ public:
+  DecisionScreen(rex::ReXApp* app, rex::ui::ImGuiDrawer* imgui_drawer, rex::Runtime* runtime,
+                 ImFont* font, ImFont* title_font, const std::filesystem::path& game_data_root);
+
+  // Whether a decision point waits for a choice, and the file that says so.
+  static bool Waiting();
+  static std::filesystem::path Path();
+
+ protected:
+  void OnDraw(ImGuiIO& io) override;
+
+ private:
+  uint32_t id_ = 0, row_ = 0, rank_ = 0;
+  std::string choices_[2], texts_[2];
+  // Each choice's first item (type, number), for its icon.
+  uint32_t types_[2] = {}, numbers_[2] = {};
+  int selected_ = 0;
 };
 
 class DonorsScreen : public OverlayScreen {

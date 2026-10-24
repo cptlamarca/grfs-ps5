@@ -18,9 +18,11 @@
 #include "achievements_ui.h"
 #include "grfs_app.h"
 #include "player_account.h"
+#include "support_screen.h"
 
 #include <algorithm>
 #include <cstring>
+#include <filesystem>
 #include <map>
 #include <mutex>
 #include <string>
@@ -295,6 +297,25 @@ REX_HOOK_RAW(sub_822E4B18) {
     PatchConnectionMenu(rex::system::kernel_state()->memory());
     std::lock_guard<std::mutex> lock(labels_mutex);
     online = !on_lan;
+  }
+  // A System Link decision point reached waits for a choice in the lobby and
+  // the characters menu: shown on entering them, or once it comes up there
+  // (the game works the progression out after the lobby has loaded).
+  static std::string screen;
+  static std::filesystem::file_time_type decision_shown{};
+  if (command == "ScreenLoaded") {
+    screen = value;
+    decision_shown = {};
+  }
+  if (screen == "Lobby.feu" || screen == "CharacterList.feu") {
+    std::error_code error;
+    auto time = std::filesystem::last_write_time(DecisionScreen::Path(), error);
+    if (!error && time != decision_shown) {
+      decision_shown = time;
+      if (GrfsApp* app = GrfsApp::instance()) {
+        app->ShowDecision();
+      }
+    }
   }
   // A console banned from the online is told so when it would play there.
   std::string reason;

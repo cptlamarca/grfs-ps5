@@ -228,6 +228,13 @@ void GrfsApp::ShowNotice(std::string title, std::string text) {
   SetAchievementsOverlayVisible(true);
 }
 
+void GrfsApp::ShowDecision() {
+  if (DecisionScreen::Waiting()) {
+    overlay_ = Overlay::kDecision;
+    SetAchievementsOverlayVisible(true);
+  }
+}
+
 std::unique_ptr<rex::ui::ImGuiDialog> GrfsApp::CreateAchievementsOverlay() {
   if (!imgui_drawer() || !runtime() || !runtime()->kernel_state()) {
     return nullptr;
@@ -237,6 +244,10 @@ std::unique_ptr<rex::ui::ImGuiDialog> GrfsApp::CreateAchievementsOverlay() {
   }
   if (overlay_ == Overlay::kDonors) {
     return std::make_unique<DonorsScreen>(this, imgui_drawer(), runtime(), font_, title_font_);
+  }
+  if (overlay_ == Overlay::kDecision) {
+    return std::make_unique<DecisionScreen>(this, imgui_drawer(), runtime(), font_, title_font_,
+                                            game_data_root());
   }
   if (overlay_ == Overlay::kNotice) {
     std::lock_guard<std::mutex> lock(notice_mutex_);

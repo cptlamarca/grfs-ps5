@@ -29,6 +29,8 @@ class GrfsApp : public rex::ReXApp {
   void ShowDonors();
   // A notice (title and text), from any thread.
   void ShowNotice(std::string title, std::string text);
+  // The System Link decision point waiting for a choice, if there is one.
+  void ShowDecision();
 
   // The game folder, for the UI.
   std::filesystem::path GameFolder() const { return game_data_root(); }
@@ -45,7 +47,7 @@ class GrfsApp : public rex::ReXApp {
 
  private:
   static inline GrfsApp* instance_ = nullptr;
-  enum class Overlay { kTrophies, kSupport, kDonors, kNotice };
+  enum class Overlay { kTrophies, kSupport, kDonors, kNotice, kDecision };
   std::atomic<Overlay> overlay_{Overlay::kTrophies};
   std::mutex notice_mutex_;
   std::string notice_title_, notice_text_;

@@ -288,8 +288,10 @@ class Store:
             json.dump(players, f, ensure_ascii=False, indent=1)
         os.replace(tmp, self.players_path)
 
-    def register(self, serial, name, xp, ip):
-        """A game's hello: its record, with the class XP it should use now."""
+    def register(self, serial, name, xp, ip, choices=None):
+        """A game's hello: its record, with the class XP it should use now,
+        and its decision points' choices (ID -> 1 or 2); "replace" when the
+        page reset them, so the game's copy is replaced too."""
         now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
         with self.lock:
             players = self.load_players()
@@ -297,13 +299,18 @@ class Store:
                                                  "xp": [0] * CLASSES, "banned": False,
                                                  "reason": "", "reset": False})
             player.update(name=name or player.get("name", ""), ip=ip, last_seen=now)
+            replace = bool(player.pop("choices_reset", False))
+            player.setdefault("choices", {})
             if player.get("reset"):
                 # (the XP the page reset: the game's copy is replaced)
                 player["reset"] = False
             elif xp:
                 player["xp"] = [max(a, b) for a, b in zip(player["xp"], xp)]
+            if not replace:
+                for point, choice in (choices or {}).items():
+                    player["choices"].setdefault(point, choice)
             self.save_players(players)
-            return dict(player)
+            return dict(player, replace=replace)
 
     def update_player(self, serial, change):
         with self.lock:
@@ -316,6 +323,9 @@ class Store:
                 player["reason"] = one_line(change.get("reason", ""))[:200] if player["banned"] else ""
             if change.get("reset_xp"):
                 change["xp"] = [0] * CLASSES
+                # (the decision points too, as the game's respec)
+                player["choices"] = {}
+                player["choices_reset"] = True
             xp = change.get("xp")
             if isinstance(xp, list) and len(xp) == CLASSES:
                 # (replacing the console's on its next hello)
@@ -393,7 +403,8 @@ def make_handler(store, password):
 
         def do_POST(self):
             # A game's hello: "key=value" lines (serial, name, xp as six
-            # numbers), answered alike (banned, reason, xp).
+            # numbers, choices as ID:choice pairs), answered alike (banned,
+            # reason, xp, choices, replace).
             if self.path != "/player":
                 self.send(404, "not found")
                 return
@@ -413,10 +424,19 @@ def make_handler(store, password):
                 xp = [max(0, min(int(v), 10 ** 9)) for v in fields.get("xp", "").split(",") if v]
             except ValueError:
                 xp = []
+            choices = {}
+            for pair in fields.get("choices", "").split(","):
+                point, _, choice = pair.partition(":")
+                if point.isdigit() and choice in ("1", "2") and len(choices) < 64:
+                    choices[point] = int(choice)
             player = store.register(serial, one_line(fields.get("name", ""))[:64],
-                                    xp if len(xp) == CLASSES else None, self.client_address[0])
+                                    xp if len(xp) == CLASSES else None, self.client_address[0],
+                                    choices)
+            pairs = ",".join(f"{k}:{v}" for k, v in sorted(player["choices"].items(),
+                                                            key=lambda kv: int(kv[0])))
             self.send(200, f"banned={int(player['banned'])}\nreason={player['reason']}\n"
-                           f"xp={','.join(map(str, player['xp']))}\n")
+                           f"xp={','.join(map(str, player['xp']))}\nchoices={pairs}\n"
+                           f"replace={int(player['replace'])}\n")
 
         def do_PUT(self):
             if self.path.startswith("/api/players/"):

@@ -6,12 +6,16 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <map>
 #include <mutex>
+#include <sstream>
 #include <string>
+#include <vector>
 
 #include <rex/cvar.h>
 #include <rex/hook.h>
 #include <rex/logging.h>
+#include <rex/ppc/func.h>
 #include <rex/system/kernel_state.h>
 #include <rex/system/xam/content_manager.h>
 
@@ -29,6 +33,8 @@ namespace {
 // result is added up in a file of the profile, and the classes get their
 // totals back, with the ranks they reach.
 constexpr uint32_t kClasses = 51288, kClassSize = 120, kClassXp = 104, kClassRank = 111;
+// The rank of the class's last decision point chosen, and a changed mark.
+constexpr uint32_t kClassDecision = 112, kClassChanged = 118;
 constexpr uint32_t kClassCount = 6;
 // The game's settings: the number of ranks (u8 at +4690) and the XP each one
 // takes from the start (u32 table at *(+4696)).
@@ -38,6 +44,32 @@ constexpr uint32_t kSettingsPointer = 0x887FDF58, kRankCount = 4690, kRankXpPoin
 // that don't exist. The career is variable 12, its size variable 13.
 constexpr uint32_t kVariables = 0x82EDE1A4, kCareer = 12, kCareerSize = 13;
 constexpr char kXpFileName[] = "system_link_xp.bin";
+// Decision points: at some ranks a class gets one of two choices of items.
+// Online, the choice was made when the rank was reached and kept by the
+// servers. In System Link the player makes it on a screen of the port
+// (src/support_screen.cpp), from the first one waiting, written to the
+// profile's kDecisionFileName ("ID\tclass\trank\tTITLES\tTITLES\tTEXT\tTEXT\tITEM\tITEM",
+// the titles' text IDs of each choice separated by commas, then the text ID
+// of each choice's description, then its first item's "type:number", for its
+// icon); the choices go to
+// kChoicesFileName ("ID choice" lines, 1 or 2), and their items into the
+// class's unlocked items whenever the progression is worked out.
+constexpr char kDecisionFileName[] = "system_link_decision.txt";
+constexpr char kChoicesFileName[] = "system_link_choices.txt";
+// The game's unlockables (st_Unlockable, 104 bytes): the service table's
+// functions +16 and +24 give their count and each one from a handle. A
+// decision point has +8 set (a byte), its rank at +12 and its class at +16
+// (23 the Scout, 26 the Engineer, 20 the Rifleman); then four items of 20
+// bytes from +24: type, number, title's and description's text IDs. The items of the first
+// choice are the first two (a weapon and the other faction's), the second's
+// the last two.
+constexpr uint32_t kServices = 0x887E9E0C, kUnlockables = 0x887FDF84;
+constexpr uint32_t kServiceCount = 16, kServiceGet = 24;
+// The player's progression, as the menus' commands find it.
+constexpr uint32_t kProgression = 0x887FDF38;
+// The classes' unlocked items: six of 104 bytes from +52016 (rows 0-2 and
+// the other faction's 3-5).
+constexpr uint32_t kInventories = 52016, kInventorySize = 104;
 constexpr char kXpMagic[4] = {'G', 'R', 'X', '2'};
 
 struct XpFile {
@@ -129,6 +161,153 @@ void SaveXp() {
   xp_time = std::filesystem::last_write_time(path, error);
 }
 
+}  // namespace
+
+REX_EXTERN(__imp__sub_88597528);
+
+namespace {
+
+struct DecisionPoint {
+  uint32_t id = 0, row = 0, rank = 0;
+  // Per choice, its items' types, numbers, titles' and descriptions' text
+  // IDs.
+  std::array<std::array<uint32_t, 4>, 2> items[2] = {};
+};
+
+std::vector<DecisionPoint> decision_points;
+
+int ClassRow(uint32_t id) {
+  switch (id) {
+    case 23: return 0;
+    case 26: return 1;
+    case 20: return 2;
+    default: return -1;
+  }
+}
+
+uint32_t CallService(PPCContext& ctx, uint8_t* base, uint32_t offset, uint32_t r3, uint32_t r4) {
+  uint32_t services = LoadGuest32(base, kServices);
+  ctx.r3.u64 = r3;
+  ctx.r4.u64 = r4;
+  rex::runtime::ResolveIndirectFunction(LoadGuest32(base, services + offset))(ctx, base);
+  return ctx.r3.u32;
+}
+
+// The decision points, read from the game's unlockables once there are some.
+const std::vector<DecisionPoint>& DecisionPoints(PPCContext& ctx, uint8_t* base) {
+  if (!decision_points.empty() || !LoadGuest32(base, kServices)) {
+    return decision_points;
+  }
+  uint32_t handle = LoadGuest32(base, kUnlockables);
+  int32_t count = int32_t(CallService(ctx, base, kServiceCount, handle, 0));
+  for (int32_t i = 0; i < count; ++i) {
+    uint32_t record = CallService(ctx, base, kServiceGet, handle, uint32_t(i));
+    int row = record ? ClassRow(LoadGuest32(base, record + 16)) : -1;
+    if (row < 0 || !base[record + 8]) {
+      continue;
+    }
+    DecisionPoint point;
+    point.id = LoadGuest32(base, record);
+    point.row = uint32_t(row);
+    point.rank = LoadGuest32(base, record + 12);
+    for (uint32_t item = 0; item < 4; ++item) {
+      for (uint32_t field = 0; field < 4; ++field) {
+        point.items[item / 2][item % 2][field] = LoadGuest32(base, record + 24 + 20 * item + 4 * field);
+      }
+    }
+    decision_points.push_back(point);
+  }
+  std::sort(decision_points.begin(), decision_points.end(),
+            [](const DecisionPoint& a, const DecisionPoint& b) { return a.rank < b.rank; });
+  REXKRNL_INFO("System Link progression: {} decision points", decision_points.size());
+  return decision_points;
+}
+
+std::filesystem::path ProfileFile(const char* name) {
+  return rex::system::kernel_state()->content_manager()->ResolveGameUserContentPath() / name;
+}
+
+// The choices made: decision point ID -> 1 or 2.
+std::map<uint32_t, uint32_t> Choices() {
+  std::map<uint32_t, uint32_t> choices;
+  std::ifstream file(ProfileFile(kChoicesFileName));
+  for (uint32_t id, choice; file >> id >> choice;) {
+    if (choice == 1 || choice == 2) {
+      choices[id] = choice;
+    }
+  }
+  return choices;
+}
+
+// Puts the items of the choices made into the classes' unlocked items, and
+// the first decision point reached without a choice into the decision file
+// (or removes it).
+void ApplyDecisions(PPCContext& ctx, uint8_t* base, uint32_t progression) {
+  const std::vector<DecisionPoint>& points = DecisionPoints(ctx, base);
+  std::map<uint32_t, uint32_t> choices = Choices();
+  const DecisionPoint* waiting = nullptr;
+  for (const DecisionPoint& point : points) {
+    if (base[progression + kClasses + point.row * kClassSize + kClassRank] < point.rank) {
+      continue;
+    }
+    auto choice = choices.find(point.id);
+    if (choice == choices.end()) {
+      waiting = waiting ? waiting : &point;
+      continue;
+    }
+    // As the game's own choice (sub_88175C18, DecisionPointChoice): the
+    // items unlocked, and the class's last decision point rank (+112).
+    for (const auto& item : point.items[choice->second - 1]) {
+      if (!item[0]) {
+        continue;
+      }
+      ctx.r3.u64 = progression + kInventories + point.row * kInventorySize;
+      ctx.r4.u64 = item[0];
+      ctx.r5.u64 = item[1];
+      __imp__sub_88597528(ctx, base);
+    }
+    uint8_t& last = base[progression + kClasses + point.row * kClassSize + kClassDecision];
+    if (last < point.rank) {
+      last = uint8_t(point.rank);
+      base[progression + kClasses + point.row * kClassSize + kClassChanged] = 1;
+    }
+  }
+  std::string decision;
+  if (waiting) {
+    std::ostringstream line;
+    line << waiting->id << '\t' << waiting->row << '\t' << waiting->rank;
+    for (const auto& choice : waiting->items) {
+      line << '\t';
+      bool first = true;
+      for (const auto& item : choice) {
+        if (item[0] && item[2]) {
+          line << (first ? "" : ",") << item[2];
+          first = false;
+        }
+      }
+    }
+    for (const auto& choice : waiting->items) {
+      line << '\t' << (choice[0][0] ? choice[0][3] : choice[1][3]);
+    }
+    for (const auto& choice : waiting->items) {
+      const auto& item = choice[0][0] ? choice[0] : choice[1];
+      line << '\t' << item[0] << ':' << item[1];
+    }
+    decision = line.str() + "\n";
+  }
+  std::filesystem::path path = ProfileFile(kDecisionFileName);
+  std::ifstream current(path);
+  std::string old((std::istreambuf_iterator<char>(current)), std::istreambuf_iterator<char>());
+  current.close();
+  std::error_code error;
+  if (decision.empty()) {
+    std::filesystem::remove(path, error);
+  } else if (decision != old) {
+    std::ofstream(path, std::ios::trunc) << decision;
+    REXKRNL_INFO("System Link progression: decision point {} waits for a choice", waiting->id);
+  }
+}
+
 // The rank of a class with that XP, before the game caps it.
 uint32_t RankForXp(const uint8_t* base, uint32_t class_xp) {
   uint32_t settings = LoadGuest32(base, kSettingsPointer);
@@ -171,16 +350,19 @@ REX_HOOK_RAW(sub_881AA208) {
 }
 
 REX_EXTERN(__imp__sub_881729E8);
+REX_EXTERN(sub_881719E0);
 
 // Refreshes the player's progression (r3) from the servers when logged in to
 // them: resets it, marks a refresh pending (+0x10BC8) and queues the request,
 // whose answer clears the mark. In System Link the player only seems logged in
 // (for the progression) and no answer ever comes: the characters menu then
 // waits forever ("Refreshing saved customization data"). So no refresh, as
-// when not logged in; the classes keep their totals.
+// when not logged in; the classes keep their totals. What they unlock is
+// worked out again, with the decision points chosen since.
 REX_HOOK_RAW(sub_881729E8) {
   static const bool system_link = rex::cvar::Query<bool>("system_link");
   if (system_link && REXCVAR_GET(system_link_progression)) {
+    sub_881719E0(ctx, base);
     return;
   }
   __imp__sub_881729E8(ctx, base);
@@ -189,7 +371,8 @@ REX_HOOK_RAW(sub_881729E8) {
 // Works out what the player's progression (r3) unlocks from the ranks of its
 // classes, after the game resets or loads it. First, if the classes hold a
 // match result not added up yet, the totals take it in; then each
-// class gets its total XP and its rank, capped as the game does.
+// class gets its total XP and its rank, capped as the game does; after the
+// game's own unlocks, the items of the decision points chosen.
 REX_HOOK_RAW(sub_881719E0) {
   if (REXCVAR_GET(system_link_progression)) {
     uint32_t progression = ctx.r3.u32;
@@ -226,8 +409,46 @@ REX_HOOK_RAW(sub_881719E0) {
       base[row + kClassRank] = uint8_t(std::min(rank, ctx.r3.u32));
     }
     ctx.r3.u64 = progression;
+    __imp__sub_881719E0(ctx, base);
+    ApplyDecisions(ctx, base, progression);
+    return;
   }
   __imp__sub_881719E0(ctx, base);
+}
+
+REX_EXTERN(__imp__sub_88174E30);
+
+// Works out again what a class (r4) of the progression (r3) unlocks with its
+// rank, from nothing: the decision points' items go back in after it.
+REX_HOOK_RAW(sub_88174E30) {
+  uint32_t progression = ctx.r3.u32;
+  __imp__sub_88174E30(ctx, base);
+  if (REXCVAR_GET(system_link_progression)) {
+    PPCRegister r3 = ctx.r3;
+    ApplyDecisions(ctx, base, progression);
+    ctx.r3 = r3;
+  }
+}
+
+REX_EXTERN(__imp__sub_884EEA08);
+
+// Runs a command of the menus' Flash screens. A decision point chosen on the
+// port's screen since the last one goes into the progression (the game's
+// own, *kProgression) before it, so the menus show its items at once.
+REX_HOOK_RAW(sub_884EEA08) {
+  static std::filesystem::file_time_type applied{};
+  static const bool system_link = rex::cvar::Query<bool>("system_link");
+  std::error_code error;
+  auto time = std::filesystem::last_write_time(ProfileFile(kChoicesFileName), error);
+  uint32_t progression = LoadGuest32(base, kProgression);
+  if (system_link && REXCVAR_GET(system_link_progression) && !error && time != applied &&
+      progression) {
+    applied = time;
+    PPCContext saved = ctx;
+    ApplyDecisions(ctx, base, progression);
+    ctx = saved;
+  }
+  __imp__sub_884EEA08(ctx, base);
 }
 
 REX_EXTERN(__imp__sub_8815B1C0);

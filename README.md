@@ -26,7 +26,10 @@ are included — you need your own copy. See [CREDITS.md](CREDITS.md).
   in the multiplayer menu (`src/connection_menu.cpp`).
 - System Link progression: class XP and ranks, kept per console on the
   server too (`src/ai_hooks.cpp`, `src/progression_hooks.cpp`,
-  `src/player_account.cpp`), with online bans.
+  `src/player_account.cpp`), with online bans. Decision points (ranks 4, 16,
+  20, 28, 32 and 40) get a screen to choose their items, as online did
+  (`DecisionScreen` in `src/support_screen.cpp`); the choices are kept on the
+  server too.
 - No Uplay: passport and linked account always on.
 - Ghost Feed news, donors and a "help keep me active" screen with a QR code,
   from the server (`src/news_hooks.cpp`, `src/support_screen.cpp`).
