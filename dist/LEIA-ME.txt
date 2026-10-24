@@ -8,7 +8,7 @@ INSTALAÇÃO
    do PS5 por FTP).
 2. Extraia a ISO do jogo no PC (por exemplo com extract-xiso) e copie TODO o
    conteúdo para a pasta assets/ do app:
-     /data/homebrew/PPSA95210/assets/default.xex
+     /data/homebrew/PPSA95210/assets/default.xex  (ou Assets/)
      /data/homebrew/PPSA95210/assets/AICLASS_X360_F.xex
      /data/homebrew/PPSA95210/assets/Language/ ... (e as demais pastas)
    O nome "default.xex" precisa estar em letras minúsculas.

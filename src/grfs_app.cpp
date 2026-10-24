@@ -126,12 +126,21 @@ void ApplyNextTestProfile(const std::filesystem::path& app, const std::filesyste
   std::ofstream(config, std::ios::trunc) << out.str();
 }
 
+// The port's own files (fonts, translations): the app's metadata folder, as
+// released, or the one of the game folder (where earlier builds had them).
+std::filesystem::path MetadataFolder(const std::filesystem::path& game_data_root) {
+  std::error_code ec;
+  std::filesystem::path app = rex::filesystem::GetExecutableFolder() / "metadata";
+  return std::filesystem::exists(app, ec) ? app : game_data_root / "metadata";
+}
+
 }  // namespace
 
 void GrfsApp::OnConfigurePaths(rex::PathConfig& paths) {
   const std::filesystem::path app = rex::filesystem::GetExecutableFolder();
   std::error_code ec;
-  // The disc files: <app>/assets (extracted from the ISO, default.xex inside).
+  // The disc files: <app>/Assets (where the app store extracts the disc image)
+  // or <app>/assets (extracted from the ISO by hand, default.xex inside).
   if (paths.game_data_root.empty()) {
     paths.game_data_root = std::filesystem::exists(app / "Assets" / "default.xex", ec)
                                ? app / "Assets"
@@ -180,7 +189,7 @@ void GrfsApp::OnConfigureFonts(ImFontAtlas* atlas) {
   // big enough for a TV.
   static const ImWchar kLatin[] = {0x0020, 0x00FF, 0x2018, 0x201D, 0};
   auto load = [&](const char* file, float size) -> ImFont* {
-    std::filesystem::path path = game_data_root() / "metadata" / "fonts" / file;
+    std::filesystem::path path = MetadataFolder(game_data_root()) / "fonts" / file;
     if (!std::filesystem::exists(path)) {
       REXLOG_WARN("Font {} missing", path.string());
       return nullptr;
@@ -251,6 +260,6 @@ void GrfsApp::OnPreLaunchModule() {
   StartPlayerAccount(runtime());
   // The XEX only has the achievements in English.
   if (IsPortuguese()) {
-    achievements().LoadMetadataFile(game_data_root() / "metadata" / "achievements_pt.toml");
+    achievements().LoadMetadataFile(MetadataFolder(game_data_root()) / "achievements_pt.toml");
   }
 }
