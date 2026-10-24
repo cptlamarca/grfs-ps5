@@ -5,8 +5,10 @@
 
 #include "player_account.h"
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
+#include <cstdio>
 #include <chrono>
 #include <cstring>
 #include <filesystem>
@@ -109,6 +111,55 @@ void WriteChoices(const std::map<uint32_t, uint32_t>& choices) {
   std::filesystem::rename(temporary, path, error);
 }
 
+// The attachments bought with credits (src/ai_hooks.cpp): "spent CLASS N"
+// and "weapon CLASS NUMBER BOUGHT" (hex) lines.
+std::filesystem::path AttachmentsPath() {
+  return rex::system::kernel_state()->content_manager()->ResolveGameUserContentPath() /
+         "system_link_attachments.txt";
+}
+
+struct Attachments {
+  std::array<uint32_t, 3> spent{};
+  std::map<std::pair<uint32_t, uint32_t>, uint64_t> bought;
+  bool operator==(const Attachments&) const = default;
+};
+
+Attachments ReadAttachments() {
+  Attachments attachments;
+  std::ifstream file(AttachmentsPath());
+  for (std::string kind; file >> kind;) {
+    uint32_t row = 0, number = 0;
+    if (kind == "spent" && file >> row >> number && row < 3) {
+      attachments.spent[row] = number;
+    } else if (kind == "weapon" && file >> row >> number && row < 3) {
+      uint64_t bought = 0;
+      file >> std::hex >> bought >> std::dec;
+      attachments.bought[{row, number}] = bought;
+    } else {
+      file.ignore(1 << 20, '\n');
+    }
+  }
+  return attachments;
+}
+
+void WriteAttachments(const Attachments& attachments) {
+  std::filesystem::path path = AttachmentsPath();
+  std::filesystem::path temporary = path;
+  temporary += ".tmp";
+  {
+    std::ofstream file(temporary, std::ios::trunc);
+    for (uint32_t row = 0; row < 3; ++row) {
+      file << "spent " << row << ' ' << attachments.spent[row] << '\n';
+    }
+    for (const auto& [key, bought] : attachments.bought) {
+      file << "weapon " << key.first << ' ' << key.second << ' ' << std::hex << bought << std::dec
+           << '\n';
+    }
+  }
+  std::error_code error;
+  std::filesystem::rename(temporary, path, error);
+}
+
 // The PS5's console ID (its OpenPSID, unique and fixed, as hex; empty
 // elsewhere), which the server knows the console by.
 std::string ReadSerialNumber() {
@@ -167,6 +218,16 @@ void Sync(const std::string& url, const std::string& serial, const std::string& 
     first = false;
   }
   request << "\n";
+  const Attachments attachments = ReadAttachments();
+  request << "spent=" << attachments.spent[0] << ',' << attachments.spent[1] << ','
+          << attachments.spent[2] << "\nbought=";
+  first = true;
+  for (const auto& [key, bought] : attachments.bought) {
+    request << (first ? "" : ",") << key.first << ':' << key.second << ':' << std::hex << bought
+            << std::dec;
+    first = false;
+  }
+  request << "\n";
 
   std::string body;
   if (!HttpPost(url, request.str(), body)) {
@@ -177,6 +238,8 @@ void Sync(const std::string& url, const std::string& serial, const std::string& 
   Totals server = totals;
   bool have_server_xp = false, have_server_choices = false, replace = false;
   std::map<uint32_t, uint32_t> server_choices;
+  Attachments server_attachments;
+  bool have_server_attachments = false;
   std::istringstream lines(body);
   for (std::string line; std::getline(lines, line);) {
     size_t equals = line.find('=');
@@ -207,8 +270,39 @@ void Sync(const std::string& url, const std::string& serial, const std::string& 
           }
         }
       }
+    } else if (key == "spent") {
+      have_server_attachments = true;
+      std::istringstream numbers(value);
+      size_t i = 0;
+      for (std::string number; i < 3 && std::getline(numbers, number, ','); ++i) {
+        server_attachments.spent[i] = uint32_t(std::strtoul(number.c_str(), nullptr, 10));
+      }
+    } else if (key == "bought") {
+      std::istringstream items(value);
+      for (std::string item; std::getline(items, item, ',');) {
+        uint32_t row = 0, number = 0;
+        char hex[17] = {};
+        if (std::sscanf(item.c_str(), "%u:%u:%16[0-9a-fA-F]", &row, &number, hex) == 3 && row < 3) {
+          server_attachments.bought[{row, number}] = std::strtoull(hex, nullptr, 16);
+        }
+      }
     } else if (key == "replace") {
       replace = value == "1";
+    }
+  }
+  if (have_server_attachments) {
+    Attachments merged = replace ? server_attachments : attachments;
+    if (!replace) {
+      for (size_t i = 0; i < 3; ++i) {
+        merged.spent[i] = std::max(merged.spent[i], server_attachments.spent[i]);
+      }
+      for (const auto& [key, bought] : server_attachments.bought) {
+        merged.bought[key] |= bought;
+      }
+    }
+    if (!(merged == attachments)) {
+      REXKRNL_INFO("Player account: attachments bought from the server");
+      WriteAttachments(merged);
     }
   }
   if (have_server_choices) {
@@ -257,8 +351,10 @@ void StartPlayerAccount(rex::Runtime* runtime) {
       if (slash != std::string::npos && slash > 7) {
         std::error_code error;
         std::error_code choices_error;
-        auto changed = std::max(std::filesystem::last_write_time(XpPath(), error),
-                                std::filesystem::last_write_time(ChoicesPath(), choices_error));
+        auto changed = std::max({std::filesystem::last_write_time(XpPath(), error),
+                                 std::filesystem::last_write_time(ChoicesPath(), choices_error),
+                                 std::filesystem::last_write_time(AttachmentsPath(),
+                                                                  choices_error)});
         // (every 5 minutes anyway, for bans)
         if (round % 10 == 0 || error || changed != synced) {
           // (the account of the pad of player 1, the PS5's user)
@@ -267,8 +363,9 @@ void StartPlayerAccount(rex::Runtime* runtime) {
             name = input->GetUserName(0);
           }
           Sync(news.substr(0, slash) + "/player", serial, name);
-          synced = std::max(std::filesystem::last_write_time(XpPath(), error),
-                            std::filesystem::last_write_time(ChoicesPath(), choices_error));
+          synced = std::max({std::filesystem::last_write_time(XpPath(), error),
+                             std::filesystem::last_write_time(ChoicesPath(), choices_error),
+                             std::filesystem::last_write_time(AttachmentsPath(), choices_error)});
         }
       }
       std::this_thread::sleep_for(std::chrono::seconds(30));

@@ -68,8 +68,22 @@ constexpr uint32_t kServiceCount = 16, kServiceGet = 24;
 // The player's progression, as the menus' commands find it.
 constexpr uint32_t kProgression = 0x887FDF38;
 // The classes' unlocked items: six of 104 bytes from +52016 (rows 0-2 and
-// the other faction's 3-5).
+// the other faction's 3-5). Attachments: a u64 of those still locked for
+// every weapon (+48, bit = attachment number), and the weapons (+36 count, at
+// *(+40), 16 bytes: a u64 of the attachments bought for that one, then its
+// number at +8).
 constexpr uint32_t kInventories = 52016, kInventorySize = 104;
+constexpr uint32_t kInventoryWeaponCount = 36, kInventoryWeapons = 40, kInventoryLocked = 48;
+constexpr uint32_t kWeaponSize = 16, kWeaponNumber = 8;
+// Attachment credits: a class gets one per rank it gains (+88 those left,
+// +90 those earned), as the game adds them at the end of a match
+// (sub_8818C6D0); each buys an attachment for one weapon. The ranks come
+// from the totals here, so the credits are its rank less those spent, and the
+// attachments bought (which a new progression locks again) are kept in the
+// profile's kAttachmentsFileName ("spent CLASS N" and "weapon CLASS NUMBER
+// LOCKED" lines, LOCKED the weapon's locked attachments in hex).
+constexpr uint32_t kClassCredits = 88, kClassCreditsEarned = 90;
+constexpr char kAttachmentsFileName[] = "system_link_attachments.txt";
 constexpr char kXpMagic[4] = {'G', 'R', 'X', '2'};
 
 struct XpFile {
@@ -308,6 +322,123 @@ void ApplyDecisions(PPCContext& ctx, uint8_t* base, uint32_t progression) {
   }
 }
 
+struct Attachments {
+  std::array<uint32_t, 3> spent{};
+  // (class, weapon number) -> its attachments bought
+  std::map<std::pair<uint32_t, uint32_t>, uint64_t> bought;
+};
+
+Attachments attachments;
+std::filesystem::file_time_type attachments_time{};
+bool attachments_loaded = false;
+
+// Reads the file again when something else (the player account) replaced it.
+Attachments& LoadAttachments() {
+  std::error_code error;
+  auto time = std::filesystem::last_write_time(ProfileFile(kAttachmentsFileName), error);
+  if (!attachments_loaded || (!error && time != attachments_time)) {
+    attachments_loaded = true;
+    attachments_time = time;
+    attachments = {};
+    std::ifstream file(ProfileFile(kAttachmentsFileName));
+    for (std::string kind; file >> kind;) {
+      uint32_t row = 0, number = 0;
+      if (kind == "spent" && file >> row >> number && row < 3) {
+        attachments.spent[row] = number;
+      } else if (kind == "weapon" && file >> row >> number && row < 3) {
+        uint64_t bought = 0;
+        file >> std::hex >> bought >> std::dec;
+        attachments.bought[{row, number}] = bought;
+      } else {
+        file.ignore(1 << 20, '\n');
+      }
+    }
+  }
+  return attachments;
+}
+
+void SaveAttachments() {
+  std::filesystem::path path = ProfileFile(kAttachmentsFileName);
+  std::filesystem::path temporary = path;
+  temporary += ".tmp";
+  {
+    std::ofstream file(temporary, std::ios::trunc);
+    for (uint32_t row = 0; row < 3; ++row) {
+      file << "spent " << row << ' ' << attachments.spent[row] << '\n';
+    }
+    for (const auto& [key, bought] : attachments.bought) {
+      file << "weapon " << key.first << ' ' << key.second << ' ' << std::hex << bought << std::dec
+           << '\n';
+    }
+  }
+  std::error_code error;
+  std::filesystem::rename(temporary, path, error);
+  attachments_time = std::filesystem::last_write_time(path, error);
+}
+
+// Puts the attachments bought back into the classes' weapons, and gives
+// them the credits they have left.
+void ApplyAttachments(uint8_t* base, uint32_t progression) {
+  Attachments& model = LoadAttachments();
+  for (uint32_t row = 0; row < 3; ++row) {
+    uint32_t inventory = progression + kInventories + row * kInventorySize;
+    uint32_t count = LoadGuest32(base, inventory + kInventoryWeaponCount);
+    uint32_t weapons = LoadGuest32(base, inventory + kInventoryWeapons);
+    for (uint32_t i = 0; weapons && i < count && i < 256; ++i) {
+      uint32_t weapon = weapons + i * kWeaponSize;
+      auto kept = model.bought.find({row, uint32_t(base[weapon + kWeaponNumber] << 8 |
+                                                   base[weapon + kWeaponNumber + 1])});
+      if (kept != model.bought.end()) {
+        uint64_t bought = uint64_t(LoadGuest32(base, weapon)) << 32 | LoadGuest32(base, weapon + 4);
+        bought |= kept->second;
+        StoreGuest32(base, weapon, uint32_t(bought >> 32));
+        StoreGuest32(base, weapon + 4, uint32_t(bought));
+      }
+    }
+    uint32_t class_row = progression + kClasses + row * kClassSize;
+    uint32_t rank = base[class_row + kClassRank];
+    uint16_t left = uint16_t(rank > model.spent[row] ? rank - model.spent[row] : 0);
+    base[class_row + kClassCredits] = uint8_t(left >> 8);
+    base[class_row + kClassCredits + 1] = uint8_t(left);
+    base[class_row + kClassCreditsEarned] = uint8_t(rank >> 8);
+    base[class_row + kClassCreditsEarned + 1] = uint8_t(rank);
+  }
+}
+
+// Notices attachments bought (a weapon's attachment, still locked for the
+// others) and keeps them, with the credits spent. A weapon's attachments when
+// first seen are its own.
+void TrackAttachments(uint8_t* base, uint32_t progression) {
+  Attachments& model = LoadAttachments();
+  bool changed = false;
+  for (uint32_t row = 0; row < 3; ++row) {
+    uint32_t inventory = progression + kInventories + row * kInventorySize;
+    uint64_t all_locked = uint64_t(LoadGuest32(base, inventory + kInventoryLocked)) << 32 |
+                          LoadGuest32(base, inventory + kInventoryLocked + 4);
+    uint32_t count = LoadGuest32(base, inventory + kInventoryWeaponCount);
+    uint32_t weapons = LoadGuest32(base, inventory + kInventoryWeapons);
+    for (uint32_t i = 0; weapons && i < count && i < 256; ++i) {
+      uint32_t weapon = weapons + i * kWeaponSize;
+      uint32_t number = base[weapon + kWeaponNumber] << 8 | base[weapon + kWeaponNumber + 1];
+      uint64_t bought = uint64_t(LoadGuest32(base, weapon)) << 32 | LoadGuest32(base, weapon + 4);
+      // (first seen: the weapon's own attachments, not bought)
+      auto [kept, added] = model.bought.try_emplace({row, number}, bought);
+      changed |= added;
+      uint64_t now_bought = bought & ~kept->second & all_locked;
+      if (now_bought) {
+        model.spent[row] += uint32_t(__builtin_popcountll(now_bought));
+        kept->second |= now_bought;
+        changed = true;
+        REXKRNL_INFO("System Link progression: class {} bought attachments {:X} for weapon {}",
+                     row, now_bought, number);
+      }
+    }
+  }
+  if (changed) {
+    SaveAttachments();
+  }
+}
+
 // The rank of a class with that XP, before the game caps it.
 uint32_t RankForXp(const uint8_t* base, uint32_t class_xp) {
   uint32_t settings = LoadGuest32(base, kSettingsPointer);
@@ -411,6 +542,7 @@ REX_HOOK_RAW(sub_881719E0) {
     ctx.r3.u64 = progression;
     __imp__sub_881719E0(ctx, base);
     ApplyDecisions(ctx, base, progression);
+    ApplyAttachments(base, progression);
     return;
   }
   __imp__sub_881719E0(ctx, base);
@@ -426,6 +558,7 @@ REX_HOOK_RAW(sub_88174E30) {
   if (REXCVAR_GET(system_link_progression)) {
     PPCRegister r3 = ctx.r3;
     ApplyDecisions(ctx, base, progression);
+    ApplyAttachments(base, progression);
     ctx.r3 = r3;
   }
 }
@@ -434,21 +567,27 @@ REX_EXTERN(__imp__sub_884EEA08);
 
 // Runs a command of the menus' Flash screens. A decision point chosen on the
 // port's screen since the last one goes into the progression (the game's
-// own, *kProgression) before it, so the menus show its items at once.
+// own, *kProgression) before it, so the menus show its items at once; the
+// attachments it bought are kept after it.
 REX_HOOK_RAW(sub_884EEA08) {
   static std::filesystem::file_time_type applied{};
   static const bool system_link = rex::cvar::Query<bool>("system_link");
   std::error_code error;
   auto time = std::filesystem::last_write_time(ProfileFile(kChoicesFileName), error);
   uint32_t progression = LoadGuest32(base, kProgression);
-  if (system_link && REXCVAR_GET(system_link_progression) && !error && time != applied &&
-      progression) {
+  const bool enabled = system_link && REXCVAR_GET(system_link_progression) && progression;
+  if (enabled && !error && time != applied) {
     applied = time;
     PPCContext saved = ctx;
     ApplyDecisions(ctx, base, progression);
+    ApplyAttachments(base, progression);
     ctx = saved;
   }
   __imp__sub_884EEA08(ctx, base);
+  // (the gunsmith buys attachments on its commands)
+  if (enabled) {
+    TrackAttachments(base, progression);
+  }
 }
 
 REX_EXTERN(__imp__sub_8815B1C0);

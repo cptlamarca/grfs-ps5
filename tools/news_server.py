@@ -288,10 +288,12 @@ class Store:
             json.dump(players, f, ensure_ascii=False, indent=1)
         os.replace(tmp, self.players_path)
 
-    def register(self, serial, name, xp, ip, choices=None):
+    def register(self, serial, name, xp, ip, choices=None, spent=None, bought=None):
         """A game's hello: its record, with the class XP it should use now,
-        and its decision points' choices (ID -> 1 or 2); "replace" when the
-        page reset them, so the game's copy is replaced too."""
+        its decision points' choices (ID -> 1 or 2), the attachment credits
+        each class spent and the attachments bought ("class:weapon" -> a
+        bit mask); "replace" when the page reset them, so the game's copy is
+        replaced too."""
         now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
         with self.lock:
             players = self.load_players()
@@ -301,6 +303,8 @@ class Store:
             player.update(name=name or player.get("name", ""), ip=ip, last_seen=now)
             replace = bool(player.pop("choices_reset", False))
             player.setdefault("choices", {})
+            player.setdefault("spent", [0, 0, 0])
+            player.setdefault("bought", {})
             if player.get("reset"):
                 # (the XP the page reset: the game's copy is replaced)
                 player["reset"] = False
@@ -309,6 +313,10 @@ class Store:
             if not replace:
                 for point, choice in (choices or {}).items():
                     player["choices"].setdefault(point, choice)
+                if spent:
+                    player["spent"] = [max(a, b) for a, b in zip(player["spent"], spent)]
+                for key, mask in (bought or {}).items():
+                    player["bought"][key] = player["bought"].get(key, 0) | mask
             self.save_players(players)
             return dict(player, replace=replace)
 
@@ -325,6 +333,8 @@ class Store:
                 change["xp"] = [0] * CLASSES
                 # (the decision points too, as the game's respec)
                 player["choices"] = {}
+                player["spent"] = [0, 0, 0]
+                player["bought"] = {}
                 player["choices_reset"] = True
             xp = change.get("xp")
             if isinstance(xp, list) and len(xp) == CLASSES:
@@ -403,8 +413,9 @@ def make_handler(store, password):
 
         def do_POST(self):
             # A game's hello: "key=value" lines (serial, name, xp as six
-            # numbers, choices as ID:choice pairs), answered alike (banned,
-            # reason, xp, choices, replace).
+            # numbers, choices as ID:choice pairs, spent as three numbers,
+            # bought as class:weapon:hex), answered alike (banned, reason, xp,
+            # choices, spent, bought, replace).
             if self.path != "/player":
                 self.send(404, "not found")
                 return
@@ -429,13 +440,28 @@ def make_handler(store, password):
                 point, _, choice = pair.partition(":")
                 if point.isdigit() and choice in ("1", "2") and len(choices) < 64:
                     choices[point] = int(choice)
+            try:
+                spent = [max(0, min(int(v), 1000)) for v in fields.get("spent", "").split(",") if v]
+            except ValueError:
+                spent = []
+            bought = {}
+            for item in fields.get("bought", "").split(","):
+                parts = item.split(":")
+                if len(parts) == 3 and parts[0] in ("0", "1", "2") and parts[1].isdigit() \
+                        and len(bought) < 512:
+                    try:
+                        bought[f"{parts[0]}:{int(parts[1])}"] = int(parts[2], 16) & (2 ** 64 - 1)
+                    except ValueError:
+                        pass
             player = store.register(serial, one_line(fields.get("name", ""))[:64],
                                     xp if len(xp) == CLASSES else None, self.client_address[0],
-                                    choices)
+                                    choices, spent if len(spent) == 3 else None, bought)
             pairs = ",".join(f"{k}:{v}" for k, v in sorted(player["choices"].items(),
                                                             key=lambda kv: int(kv[0])))
             self.send(200, f"banned={int(player['banned'])}\nreason={player['reason']}\n"
                            f"xp={','.join(map(str, player['xp']))}\nchoices={pairs}\n"
+                           f"spent={','.join(map(str, player['spent']))}\n"
+                           f"bought={','.join(f'{k}:{v:x}' for k, v in sorted(player['bought'].items()))}\n"
                            f"replace={int(player['replace'])}\n")
 
         def do_PUT(self):
