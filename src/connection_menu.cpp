@@ -90,6 +90,22 @@ bool FindPool(const char* data, size_t size, size_t at, std::map<std::string, ui
   return false;
 }
 
+// bytes in data[0, size), from their second byte on (the first, a 0, is
+// common): memchr for it, then the rest (the PS5's libc has no memmem).
+char* FindBytes(char* data, size_t size, std::string_view bytes) {
+  for (char* end = data + size; size_t(end - data) >= bytes.size(); ++data) {
+    data = static_cast<char*>(std::memchr(data + 1, bytes[1], end - data - bytes.size() + 1));
+    if (!data) {
+      return nullptr;
+    }
+    --data;
+    if (!std::memcmp(data, bytes.data(), bytes.size())) {
+      return data;
+    }
+  }
+  return nullptr;
+}
+
 void PatchScreen(char* data, size_t size, uint32_t guest_base, size_t at) {
   std::map<std::string, uint32_t> pool;
   size_t pool_end;
@@ -184,6 +200,7 @@ void PatchConnectionMenu(rex::memory::Memory* memory) {
     label_keys.clear();
   }
   int count = 0;
+  bool done = false;
   for (uint32_t heap_address : {0x00000000u, 0x40000000u}) {
     rex::memory::BaseHeap* heap = memory->LookupHeap(heap_address);
     if (!heap) {
@@ -191,7 +208,7 @@ void PatchConnectionMenu(rex::memory::Memory* memory) {
     }
     uint32_t address = heap->heap_base();
     const uint32_t end = heap->heap_base() + heap->heap_size();
-    while (address < end) {
+    while (address < end && !done) {
       rex::memory::HeapAllocationInfo info;
       if (!heap->QueryRegionInfo(address, &info)) {
         break;
@@ -203,12 +220,24 @@ void PatchConnectionMenu(rex::memory::Memory* memory) {
       if ((info.state & rex::memory::kMemoryAllocationCommit) &&
           (info.protect & rex::memory::kMemoryProtectWrite)) {
         char* data = memory->TranslateVirtual<char*>(info.base_address);
-        std::string_view region(data, info.region_size);
-        for (std::string_view texts : {kPoolTexts, kPatchedTexts}) {
-          for (size_t at = region.find(texts); at != std::string_view::npos;
-               at = region.find(texts, at + texts.size())) {
-            PatchScreen(data, info.region_size, info.base_address, at);
+        const size_t size = info.region_size;
+        // One pass (fast) for their common end, then their starts.
+        constexpr std::string_view kEnd("\0connectionTypes", 16);
+        const size_t start = kPoolTexts.size() - kEnd.size();
+        for (char* hit = FindBytes(data, size, kEnd); hit && !done;
+             hit = FindBytes(hit + 1, data + size - hit - 1, kEnd)) {
+          size_t at = size_t(hit - data);
+          if (at < start) {
+            continue;
+          }
+          at -= start;
+          const bool fresh = !std::memcmp(data + at, kPoolTexts.data(), start);
+          if (fresh || !std::memcmp(data + at, kPatchedTexts.data(), start)) {
+            PatchScreen(data, size, info.base_address, at);
             ++count;
+            // The screen just loaded is the one copy not patched yet: once
+            // it is, the rest of the heaps (older copies) can wait.
+            done = fresh;
           }
         }
       }

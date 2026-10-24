@@ -2,6 +2,7 @@
 // TROPHIES: its label is renamed and selecting it opens the trophies screen
 // (the achievements, PS5 style) instead of asking to sign in to Xbox LIVE.
 
+#include <algorithm>
 #include <cstring>
 #include <string>
 #include <string_view>
@@ -91,6 +92,22 @@ void RewriteFunction(char* data, size_t size, size_t at, std::string_view body) 
   }
 }
 
+// bytes in data[0, size): memchr for their first byte (none of ours is a
+// common one), then the rest; much faster than a plain search through the
+// screens' heaps (and the PS5's libc has no memmem).
+char* FindBytes(char* data, size_t size, std::string_view bytes) {
+  for (char* end = data + size; size_t(end - data) >= bytes.size(); ++data) {
+    data = static_cast<char*>(std::memchr(data, bytes[0], end - data - bytes.size() + 1));
+    if (!data) {
+      return nullptr;
+    }
+    if (!std::memcmp(data + 1, bytes.data() + 1, bytes.size() - 1)) {
+      return data;
+    }
+  }
+  return nullptr;
+}
+
 void RenameMainMenuEntry(rex::memory::Memory* memory) {
   static const std::string renamed = RenamedPool();
   static_assert(sizeof(kPoolUplay) - 1 == 40);
@@ -116,20 +133,23 @@ void RenameMainMenuEntry(rex::memory::Memory* memory) {
       if ((info.state & rex::memory::kMemoryAllocationCommit) &&
           (info.protect & rex::memory::kMemoryProtectWrite)) {
         char* data = memory->TranslateVirtual<char*>(info.base_address);
-        std::string_view region(data, info.region_size);
-        for (size_t at = region.find(pattern); at != std::string_view::npos;
-             at = region.find(pattern, at + pattern.size())) {
-          std::memcpy(data + at, renamed.data(), renamed.size());
+        const size_t size = info.region_size;
+        for (char* hit = FindBytes(data, size, pattern); hit;
+             hit = FindBytes(hit + pattern.size(), data + size - hit - pattern.size(), pattern)) {
+          std::memcpy(hit, renamed.data(), renamed.size());
           ++count;
-        }
-        for (const Rewrite& rewrite : kRewrites) {
-          const std::string body = SendBody(rewrite.command);
-          std::string name = std::string(rewrite.name) + '\0';
-          for (size_t at = region.find(name); at != std::string_view::npos;
-               at = region.find(name, at + 1)) {
-            // (the action's code and u16 size before the name)
-            if (at >= 3 && uint8_t(data[at - 3]) == 0x8e) {
-              RewriteFunction(data, info.region_size, at - 3, body);
+          // The functions follow the constant pool, in the same actions.
+          char* code = hit + pattern.size();
+          const size_t code_size = std::min<size_t>(data + size - code, 0x40000);
+          for (const Rewrite& rewrite : kRewrites) {
+            const std::string body = SendBody(rewrite.command);
+            const std::string name = std::string(rewrite.name) + '\0';
+            for (char* at = FindBytes(code, code_size, name); at;
+                 at = FindBytes(at + 1, code + code_size - at - 1, name)) {
+              // (the action's code and u16 size before the name)
+              if (at - data >= 3 && uint8_t(at[-3]) == 0x8e) {
+                RewriteFunction(data, size, at - 3 - data, body);
+              }
             }
           }
         }
@@ -165,7 +185,10 @@ void UiCommand(PPCContext& ctx, uint8_t* base) {
       return;
     }
     if (!std::strcmp(command, "ScreenLoaded")) {
-      RenameMainMenuEntry(rex::system::kernel_state()->memory());
+      const char* screen = argc > 1 ? GuestArgument(base, argv, 1) : nullptr;
+      if (screen && !std::strcmp(screen, "Main.feu")) {
+        RenameMainMenuEntry(rex::system::kernel_state()->memory());
+      }
     } else if (!std::strcmp(command, "RequestChangeConnectionType") && argc > 1) {
       uint32_t type = rex::memory::load_and_swap<uint32_t>(base + argv + 4);
       if (type) {
