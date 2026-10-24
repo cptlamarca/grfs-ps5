@@ -14,6 +14,7 @@ INSTALAÇÃO
    O nome "default.xex" precisa estar em letras minúsculas.
 3. Abra o jogo. Na primeira vez ele ajusta os textos dos arquivos de idioma
    (os originais ficam guardados como .orig) e compila os shaders.
+   Os botões e o controle do DualSense vêm da pasta textures/ do app.
 
 MULTIJOGADOR
 Em Multijogador -> Conexão: "Rede Local" (mesma rede) ou "Online (VPS)"

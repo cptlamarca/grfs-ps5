@@ -95,5 +95,9 @@ EOF
 for asset in icon0.png pic0.dds pic1.dds snd0.at9; do
     [[ -f $port/assets/ps5/$asset ]] && cp "$port/assets/ps5/$asset" "$app/sce_sys/$asset"
 done
+# DualSense button prompts: only the redrawn blocks, written over the
+# player's own textures when the game loads them (tools/make_texture_patches.py).
+mkdir -p "$app/textures"
+cp "$port"/assets/ps5/textures/*.patch "$app/textures/"
 "$tool" self --inspect --file "$app/eboot.bin" | tail -3
 echo "==> $app ($(stat -c %s "$app/eboot.bin") bytes)"

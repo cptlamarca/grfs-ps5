@@ -16,6 +16,9 @@ are included — you need your own copy. See [CREDITS.md](CREDITS.md).
 ## What the port adds
 
 - PS5-style trophies (the UPLAY menu entry), PT/EN texts, FSR upscaling.
+- DualSense button prompts and controller diagrams: `assets/ps5/textures/*.patch`
+  hold only the redrawn DXT blocks, written over the player's own textures
+  when the game loads them (`tools/make_texture_patches.py`).
 - System Link over the LAN or through a relay server ("Online (VPS)"), picked
   in the multiplayer menu (`src/connection_menu.cpp`).
 - System Link progression: class XP and ranks, kept per console on the
