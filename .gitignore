@@ -5,3 +5,5 @@
 *.log
 # Profiling copies of the final ELF (they hold the recompiled game)
 /profiles/
+# Shader storage shipped in the release (the game's shaders: not in git)
+/shaders/

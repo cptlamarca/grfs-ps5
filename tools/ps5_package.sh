@@ -99,5 +99,12 @@ done
 # player's own textures when the game loads them (tools/make_texture_patches.py).
 mkdir -p "$app/textures"
 cp "$port"/assets/ps5/textures/*.patch "$app/textures/"
+# Shaders and pipelines seen in earlier play (shaders/, from the runtime's
+# shareable storage; tools/merge_shader_cache.py of gr-fs), merged into the
+# player's own at startup (src/shader_seed.cpp). Not in git.
+if compgen -G "$port/shaders/*.xsh" > /dev/null; then
+    mkdir -p "$app/shaders"
+    cp "$port"/shaders/*.xsh "$port"/shaders/*.xpso "$app/shaders/"
+fi
 "$tool" self --inspect --file "$app/eboot.bin" | tail -3
 echo "==> $app ($(stat -c %s "$app/eboot.bin") bytes)"

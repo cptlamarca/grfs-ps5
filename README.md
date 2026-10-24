@@ -19,6 +19,9 @@ are included — you need your own copy. See [CREDITS.md](CREDITS.md).
 - DualSense button prompts and controller diagrams: `assets/ps5/textures/*.patch`
   hold only the redrawn DXT blocks, written over the player's own textures
   when the game loads them (`tools/make_texture_patches.py`).
+- Shaders from earlier play shipped in the release (`shaders/`), merged into
+  the player's own storage at startup and compiled before the menu
+  (`src/shader_seed.cpp`), so they don't stutter the first time.
 - System Link over the LAN or through a relay server ("Online (VPS)"), picked
   in the multiplayer menu (`src/connection_menu.cpp`).
 - System Link progression: class XP and ranks, kept per console on the

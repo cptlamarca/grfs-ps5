@@ -13,7 +13,8 @@ INSTALAÇÃO
      /data/homebrew/PPSA95210/assets/Language/ ... (e as demais pastas)
    O nome "default.xex" precisa estar em letras minúsculas.
 3. Abra o jogo. Na primeira vez ele ajusta os textos dos arquivos de idioma
-   (os originais ficam guardados como .orig) e compila os shaders.
+   (os originais ficam guardados como .orig) e compila os shaders que já vêm
+   na pasta shaders/ do app (a primeira abertura demora um pouco mais).
    Os botões e o controle do DualSense vêm da pasta textures/ do app.
 
 MULTIJOGADOR

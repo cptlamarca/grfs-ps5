@@ -31,14 +31,16 @@ add_executable(grfs src/main.cpp src/grfs_app.cpp src/achievements_ui.cpp src/ac
     src/support_screen.cpp
     src/player_account.cpp
     src/language_patch.cpp
+    src/shader_seed.cpp
     src/third_party/qrcodegen/qrcodegen.cpp
     src/trophy_sound.cpp)
 rexglue_setup_target(grfs GPU_PLUGINS xenos)
 if(REXSDK_DIR AND TARGET imgui)
-    # SDK source tree: ImGui (built into the runtime) is not on the public
-    # include path the way the installed SDK bundles it.
+    # SDK source tree: ImGui (built into the runtime) and xxHash (rex/hash.h)
+    # are not on the public include path the way the installed SDK bundles them.
     target_include_directories(grfs PRIVATE $<TARGET_PROPERTY:imgui,INTERFACE_INCLUDE_DIRECTORIES>
-                                            ${REXSDK_DIR}/thirdparty/stb)
+                                            ${REXSDK_DIR}/thirdparty/stb
+                                            ${REXSDK_DIR}/thirdparty/xxHash)
 endif()
 
 # The AI (AICLASS_X360_F.xex, a guest DLL the game loads and reloads): on the

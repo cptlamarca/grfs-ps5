@@ -19,6 +19,7 @@
 #include "achievements_ui.h"
 #include "language_patch.h"
 #include "player_account.h"
+#include "shader_seed.h"
 #include "support_screen.h"
 
 REXCVAR_DECLARE(uint32_t, user_language);
@@ -257,6 +258,7 @@ GrfsApp::CreateAchievementNotificationDialog() {
 
 void GrfsApp::OnPreLaunchModule() {
   PatchLanguageFiles(game_data_root());
+  MergeShaderSeed(rex::filesystem::GetExecutableFolder() / "shaders", runtime()->cache_root());
   StartPlayerAccount(runtime());
   // The XEX only has the achievements in English.
   if (IsPortuguese()) {
