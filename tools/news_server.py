@@ -12,7 +12,7 @@ in --file (and support.json and donors.json next to it).
 PS5 games register at POST /player (their console's serial number, account
 name and class XP), kept in players.json next to --file: the page lists
 them, bans them from the online (tools/system_link_relay.py --players reads
-the same file) and resets their XP.
+the same file) and sets or resets their XP.
 """
 
 import argparse
@@ -60,7 +60,8 @@ button.danger { background:transparent; color:var(--danger); border:1px solid va
 #status { color:var(--muted); }
 </style></head><body><main>
 <h1>JOGADORES</h1>
-<p class="hint">Consoles PS5 que abriram o jogo, pelo número de série. Banir bloqueia o online (VPS).</p>
+<p class="hint">Consoles PS5 que abriram o jogo, pelo ID do console. Banir bloqueia o online (VPS).
+O XP salvo ou zerado aqui substitui o do console na próxima sincronização (ao abrir o jogo, ou em até 5 minutos).</p>
 <div id="players"></div>
 <h1>AJUDE A ME MANTER ATIVO</h1>
 <p class="hint">A tela que abre no menu principal: título, texto e um QR code do link.</p>
@@ -123,6 +124,8 @@ function renderPlayers() {
   players.forEach(p => {
     const total = p.xp.reduce((a, b) => a + b, 0);
     const reason = el("input", {placeholder: "Motivo do banimento", value: p.reason || ""});
+    const xp = p.xp.map((v, i) => field("XP classe " + (i + 1),
+                                       el("input", {type: "number", min: 0, value: v})));
     const act = async (body) => {
       const r = await fetch("api/players/" + encodeURIComponent(p.serial), {method: "PUT",
         headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)});
@@ -136,8 +139,11 @@ function renderPlayers() {
       el("div", {className: "row"},
         field("XP por classe", el("input", {value: p.xp.join(" / ") + "  (total " + total + ")", readOnly: true})),
         field("Último acesso", el("input", {value: (p.last_seen || "") + "  " + (p.ip || ""), readOnly: true}))),
+      el("div", {className: "row"}, ...xp),
       el("div", {className: "row"}, field("Motivo", reason)),
       el("div", {className: "actions"},
+        el("button", {textContent: "Salvar XP", onclick: () =>
+          act({xp: xp.map(f => Math.max(0, parseInt(f.querySelector("input").value) || 0))})}),
         el("button", {textContent: "Zerar XP", onclick: () => {
           if (confirm("Zerar o XP de " + p.serial + "?")) act({reset_xp: true}); }}),
         p.banned
@@ -305,7 +311,11 @@ class Store:
                 player["banned"] = bool(change["banned"])
                 player["reason"] = one_line(change.get("reason", ""))[:200] if player["banned"] else ""
             if change.get("reset_xp"):
-                player["xp"] = [0] * CLASSES
+                change["xp"] = [0] * CLASSES
+            xp = change.get("xp")
+            if isinstance(xp, list) and len(xp) == CLASSES:
+                # (replacing the console's on its next hello)
+                player["xp"] = [max(0, min(int(v), 10 ** 9)) for v in xp]
                 player["reset"] = True
             self.save_players(players)
             return True
