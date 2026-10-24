@@ -28,9 +28,12 @@
 #include "news_hooks.h"
 
 #if REX_PLATFORM_PS5
-// (weak: checked before the call; the hardware serial number's function is
-// only in libkernel_sys, which games don't get)
+#include <sys/sysctl.h>
+// (weak, checked before the calls: the hardware serial number's function is
+// only in libkernel_sys, which games don't get, its import resolving to 0)
 extern "C" int sceKernelGetOpenPsId(uint8_t id[16]) __attribute__((weak));
+extern "C" int sceKernelGetOpenPsIdForSystem(uint8_t id[16]) __attribute__((weak));
+#pragma weak sysctlbyname
 #endif
 
 namespace {
@@ -78,18 +81,30 @@ void WriteXp(const Totals& totals, uint64_t counted) {
 // elsewhere), which the server knows the console by.
 std::string ReadSerialNumber() {
 #if REX_PLATFORM_PS5
+  static constexpr char kHex[] = "0123456789ABCDEF";
   uint8_t id[16] = {};
-  if (sceKernelGetOpenPsId && sceKernelGetOpenPsId(id) == 0) {
-    static constexpr char kHex[] = "0123456789ABCDEF";
+  auto hex = [&id] {
     std::string text;
     for (uint8_t byte : id) {
       text += kHex[byte >> 4];
       text += kHex[byte & 15];
     }
-    if (text.find_first_not_of('0') != std::string::npos) {
-      return text;
+    return text.find_first_not_of('0') != std::string::npos ? text : std::string();
+  };
+  // Its sources, the first that answers: games get the sysctl (the
+  // functions answer them with errors, but are kept in case).
+  size_t size = sizeof(id);
+  if (sysctlbyname && sysctlbyname("machdep.openpsid", id, &size, nullptr, 0) == 0 &&
+      size == sizeof(id) && !hex().empty()) {
+    return hex();
+  }
+  for (auto* get : {sceKernelGetOpenPsId, sceKernelGetOpenPsIdForSystem}) {
+    std::memset(id, 0, sizeof(id));
+    if (get && get(id) == 0 && !hex().empty()) {
+      return hex();
     }
   }
+  REXKRNL_WARN("Player account: no console ID");
 #endif
   return {};
 }
