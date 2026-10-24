@@ -1,0 +1,26 @@
+# Ghost Recon: Future Soldier - settings (settings v1)
+gpu_plugin = "xenos"
+input_backend = "xinput"
+# 1 = the Xbox 360's 1040x600, 2 = 2080x1200, 3 = 3120x1800
+# EDRAM emulated per pixel: the other path flashes black squares on characters
+gpu_allow_invalid_fetch_constants = true
+vsync = true
+# (a window, not fullscreen: fullscreen gives overlays a 4:3 screen on the PS5)
+fullscreen = false
+# (the PS5's GPU driver: one plain buffer for the Xbox 360's memory, no sparse binding)
+vulkan_sparse_shared_memory = false
+# (one Vulkan submission per frame: mid-frame vkQueueSubmit stalls for ms on the PS5)
+resolution_scale = 2
+render_target_path_vulkan = "fsi"
+vulkan_submit_on_primary_buffer_end = false
+# (GPU copies of memory kept between frames: 16 KB host pages watched by all their guest pages)
+clear_memory_page_state = false
+# (AMD FSR 1: sharper upscaling of 2080x1200 to the 4K screen)
+present_effect = "fsr"
+system_link = true
+system_link_relay = "216.238.102.165:37000"
+news_url = "http://216.238.102.165:37001/news.txt"
+# "Ajude a me manter ativo" (when the news server doesn't answer)
+support_title = "Ajude a me manter ativo"
+support_text = "Este port é mantido nas horas vagas.\\nSe gostou, considere apoiar com um PIX: abra o app do seu banco e escaneie o QR code.\n\nDiscord: discord.gg/pmK6zDYQSP\n\nProjeto de fãs, não oficial e sem fins lucrativos, sem afiliação com Ubisoft, Sony ou Microsoft. As doações mantêm os servidores e não dão direito a conteúdo do jogo."
+support_url = "00020126920014BR.GOV.BCB.PIX0136557b74fa-69f3-4ec5-95f2-ab38341df83f0230obrigado por ajudar o projeto!5204000053039865802BR5921Stalin Lamarca Soares6009SAO PAULO62140510dw5E547iQ26304D953"

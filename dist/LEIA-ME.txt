@@ -1,0 +1,36 @@
+GHOST RECON: FUTURE SOLDIER - PORT NATIVO PARA PS5 (projeto de fãs, não oficial)
+
+Este pacote NÃO contém o jogo. Você precisa dos arquivos da SUA PRÓPRIA cópia
+de Xbox 360 do Ghost Recon: Future Soldier (extraídos da ISO).
+
+INSTALAÇÃO
+1. Instale pela RecompStore (ou copie a pasta PPSA95210 para /data/homebrew/
+   do PS5 por FTP).
+2. Extraia a ISO do jogo no PC (por exemplo com extract-xiso) e copie TODO o
+   conteúdo para a pasta assets/ do app:
+     /data/homebrew/PPSA95210/assets/default.xex
+     /data/homebrew/PPSA95210/assets/AICLASS_X360_F.xex
+     /data/homebrew/PPSA95210/assets/Language/ ... (e as demais pastas)
+   O nome "default.xex" precisa estar em letras minúsculas.
+3. Abra o jogo. Na primeira vez ele ajusta os textos dos arquivos de idioma
+   (os originais ficam guardados como .orig) e compila os shaders.
+
+MULTIJOGADOR
+Em Multijogador -> Conexão: "Rede Local" (mesma rede) ou "Online (VPS)"
+(pela internet, pelo servidor do projeto). Seu progresso fica salvo no
+servidor pelo ID do console.
+
+Configurações: grfs.toml. Discord: discord.gg/pmK6zDYQSP
+
+Sem afiliação com Ubisoft, Sony ou Microsoft. Tom Clancy's Ghost Recon:
+Future Soldier é marca da Ubisoft. Veja CREDITS.md.
+
+---
+
+GHOST RECON: FUTURE SOLDIER - NATIVE PS5 PORT (unofficial fan project)
+
+This package does NOT include the game. You need the files of YOUR OWN Xbox
+360 copy of Ghost Recon: Future Soldier (extracted from the ISO): copy all of
+them into the app's assets/ folder (default.xex lowercase), then start it.
+Multiplayer -> Connection: "Local Network" or "Online (VPS)".
+Not affiliated with Ubisoft, Sony or Microsoft.
