@@ -61,7 +61,8 @@ button.danger { background:transparent; color:var(--danger); border:1px solid va
 </style></head><body><main>
 <h1>JOGADORES</h1>
 <p class="hint">Consoles PS5 que abriram o jogo, pelo ID do console. Banir bloqueia o online (VPS).
-O XP salvo ou zerado aqui substitui o do console na próxima sincronização (ao abrir o jogo, ou em até 5 minutos).</p>
+O XP salvo ou zerado aqui substitui o do console na próxima sincronização (ao abrir o jogo, ou em até 5 minutos).
+Níveis: 1000 XP = nível 1, 3500 = 2, 7000 = 3, 11500 = 4.</p>
 <div id="players"></div>
 <h1>AJUDE A ME MANTER ATIVO</h1>
 <p class="hint">A tela que abre no menu principal: título, texto e um QR code do link.</p>
@@ -118,14 +119,16 @@ function add() { const now = new Date(); now.setMinutes(now.getMinutes() - now.g
   news.unshift({time: now.toISOString().slice(0, 16), category: "", author: "", title: "", text: ""});
   render(); status("não salvo"); }
 function status(text) { document.getElementById("status").textContent = text; }
+const CLASS_NAMES = ["Batedor", "Engenheiro", "Atirador"];
 let players = [];
 function renderPlayers() {
   const list = document.getElementById("players"); list.replaceChildren();
   players.forEach(p => {
     const total = p.xp.reduce((a, b) => a + b, 0);
     const reason = el("input", {placeholder: "Motivo do banimento", value: p.reason || ""});
-    const xp = p.xp.map((v, i) => field("XP classe " + (i + 1),
-                                       el("input", {type: "number", min: 0, value: v})));
+    // (one XP per class, both factions alike; the game keeps six, the last three unused)
+    const xp = CLASS_NAMES.map((name, i) => field("XP " + name,
+                                                 el("input", {type: "number", min: 0, value: p.xp[i]})));
     const act = async (body) => {
       const r = await fetch("api/players/" + encodeURIComponent(p.serial), {method: "PUT",
         headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)});
@@ -137,13 +140,14 @@ function renderPlayers() {
         field("Conta", el("input", {value: p.name || "", readOnly: true})),
         field("Status", el("input", {value: p.banned ? "BANIDO" : "ativo", readOnly: true}))),
       el("div", {className: "row"},
-        field("XP por classe", el("input", {value: p.xp.join(" / ") + "  (total " + total + ")", readOnly: true})),
+        field("XP total", el("input", {value: total, readOnly: true})),
         field("Último acesso", el("input", {value: (p.last_seen || "") + "  " + (p.ip || ""), readOnly: true}))),
       el("div", {className: "row"}, ...xp),
       el("div", {className: "row"}, field("Motivo", reason)),
       el("div", {className: "actions"},
         el("button", {textContent: "Salvar XP", onclick: () =>
-          act({xp: xp.map(f => Math.max(0, parseInt(f.querySelector("input").value) || 0))})}),
+          act({xp: p.xp.map((v, i) => i < xp.length
+                                       ? Math.max(0, parseInt(xp[i].querySelector("input").value) || 0) : v)})}),
         el("button", {textContent: "Zerar XP", onclick: () => {
           if (confirm("Zerar o XP de " + p.serial + "?")) act({reset_xp: true}); }}),
         p.banned

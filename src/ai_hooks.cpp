@@ -170,6 +170,22 @@ REX_HOOK_RAW(sub_881AA208) {
   }
 }
 
+REX_EXTERN(__imp__sub_881729E8);
+
+// Refreshes the player's progression (r3) from the servers when logged in to
+// them: resets it, marks a refresh pending (+0x10BC8) and queues the request,
+// whose answer clears the mark. In System Link the player only seems logged in
+// (for the progression) and no answer ever comes: the characters menu then
+// waits forever ("Refreshing saved customization data"). So no refresh, as
+// when not logged in; the classes keep their totals.
+REX_HOOK_RAW(sub_881729E8) {
+  static const bool system_link = rex::cvar::Query<bool>("system_link");
+  if (system_link && REXCVAR_GET(system_link_progression)) {
+    return;
+  }
+  __imp__sub_881729E8(ctx, base);
+}
+
 // Works out what the player's progression (r3) unlocks from the ranks of its
 // classes, after the game resets or loads it. First, if the classes hold a
 // match result not added up yet, the totals take it in; then each
