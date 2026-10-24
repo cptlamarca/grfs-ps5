@@ -5,6 +5,14 @@ to the PS5, recompiled with [ReXGlue](https://github.com/rexglue/rexglue-sdk)
 and its PS5 layer. Not affiliated with Ubisoft, Sony or Microsoft; no game files
 are included — you need your own copy. See [CREDITS.md](CREDITS.md).
 
+![Gameplay on the PS5](docs/screenshots/gameplay.jpg)
+
+| PS5 and PC in one match through the relay | Title screen |
+|---|---|
+| ![Scoreboard](docs/screenshots/crossplay-scoreboard.jpg) | ![Title](docs/screenshots/title.jpg) |
+
+**Download:** [latest release](../../releases/latest) · **Discord:** https://discord.gg/pmK6zDYQSP
+
 ## What the port adds
 
 - PS5-style trophies (the UPLAY menu entry), PT/EN texts, FSR upscaling.
