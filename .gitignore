@@ -3,3 +3,5 @@
 !/generated/rexglue.cmake
 /out/
 *.log
+# Profiling copies of the final ELF (they hold the recompiled game)
+/profiles/
