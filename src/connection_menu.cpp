@@ -16,6 +16,7 @@
 #include "connection_menu.h"
 
 #include "achievements_ui.h"
+#include "dualsense.h"
 #include "grfs_app.h"
 #include "player_account.h"
 #include "support_screen.h"
@@ -291,6 +292,7 @@ REX_HOOK_RAW(sub_822E4B18) {
     online = !lan;
   }
   __imp__sub_822E4B18(ctx, base);
+  DualSenseUiCommand(command, value);
   // (the campaign's and Guerrilla's screens list the connections too)
   if (command == "ScreenLoaded" &&
       (value == "Multiplayer.feu" || value == "HoldTheLine.feu" || value == "Campaign.feu")) {

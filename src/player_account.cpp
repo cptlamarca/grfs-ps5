@@ -18,6 +18,7 @@
 #include <sstream>
 #include <string>
 #include <thread>
+#include <vector>
 
 #include <rex/cvar.h>
 #include <rex/input/input_system.h>
@@ -158,6 +159,89 @@ void WriteAttachments(const Attachments& attachments) {
   }
   std::error_code error;
   std::filesystem::rename(temporary, path, error);
+}
+
+// The player's data (UserData: the campaign's saves, the profile and its
+// System Link files, the trophies; not the cache), as one block for the news
+// server's /save: "GRSV1\n", then per file its path (relative, '/'), a line
+// with its size, and its bytes.
+constexpr char kSaveMagic[] = "GRSV1\n";
+
+std::vector<std::filesystem::path> SaveFiles(const std::filesystem::path& root) {
+  std::vector<std::filesystem::path> files;
+  std::error_code error;
+  for (auto it = std::filesystem::recursive_directory_iterator(root, error);
+       !error && it != std::filesystem::recursive_directory_iterator(); it.increment(error)) {
+    const std::filesystem::path relative = it->path().lexically_relative(root);
+    if (it->is_directory(error) && relative == "cache") {
+      it.disable_recursion_pending();
+    } else if (it->is_regular_file(error) && it->path().extension() != ".tmp") {
+      files.push_back(relative);
+    }
+  }
+  std::sort(files.begin(), files.end());
+  return files;
+}
+
+// What the files are now (paths, sizes and times), to notice changes.
+std::string SaveState(const std::filesystem::path& root) {
+  std::ostringstream state;
+  std::error_code error;
+  for (const auto& file : SaveFiles(root)) {
+    state << file.generic_string() << ' ' << std::filesystem::file_size(root / file, error) << ' '
+          << int64_t(std::filesystem::last_write_time(root / file, error).time_since_epoch().count())
+          << '\n';
+  }
+  return state.str();
+}
+
+std::string PackSave(const std::filesystem::path& root) {
+  std::string block = kSaveMagic;
+  for (const auto& file : SaveFiles(root)) {
+    std::ifstream in(root / file, std::ios::binary);
+    std::string data((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    block += file.generic_string() + "\n" + std::to_string(data.size()) + "\n" + data;
+  }
+  return block;
+}
+
+// Writes a block's files under root, any path leaving it refused.
+bool UnpackSave(const std::string& block, const std::filesystem::path& root) {
+  if (block.rfind(kSaveMagic, 0) != 0) {
+    return false;
+  }
+  size_t at = sizeof(kSaveMagic) - 1;
+  while (at < block.size()) {
+    size_t name_end = block.find('\n', at);
+    size_t size_end = name_end == std::string::npos ? name_end : block.find('\n', name_end + 1);
+    if (size_end == std::string::npos) {
+      return false;
+    }
+    const std::filesystem::path relative =
+        std::filesystem::path(block.substr(at, name_end - at)).lexically_normal();
+    const size_t size = std::strtoull(block.c_str() + name_end + 1, nullptr, 10);
+    at = size_end + 1;
+    if (relative.empty() || relative.is_absolute() || *relative.begin() == ".." ||
+        at + size > block.size()) {
+      return false;
+    }
+    std::error_code error;
+    std::filesystem::create_directories((root / relative).parent_path(), error);
+    std::ofstream(root / relative, std::ios::binary | std::ios::trunc)
+        .write(block.data() + at, std::streamsize(size));
+    at += size;
+  }
+  return true;
+}
+
+// Whether there's a campaign save (a .sav file) under root.
+bool HasCampaignSave(const std::filesystem::path& root) {
+  for (const auto& file : SaveFiles(root)) {
+    if (file.extension() == ".sav") {
+      return true;
+    }
+  }
+  return false;
 }
 
 // The PS5's console ID (its OpenPSID, unique and fixed, as hex; empty
@@ -340,11 +424,26 @@ void StartPlayerAccount(rex::Runtime* runtime) {
   }
   REXKRNL_INFO("Player account: console {}", serial);
   rex::kernel::xam::system_link_relay::SetIdentity(serial);
-  std::thread([serial, runtime] {
+  // A console without a campaign save (the game installed again) gets its
+  // backup back before the game starts.
+  const std::filesystem::path user_data = runtime->user_data_root();
+  std::string news = rex::cvar::Query<std::string>("news_url");
+  size_t news_slash = news.rfind('/');
+  const std::string news_base =
+      news_slash != std::string::npos && news_slash > 7 ? news.substr(0, news_slash) : "";
+  if (!news_base.empty() && !HasCampaignSave(user_data)) {
+    std::string block;
+    if (HttpGet(news_base + "/save?serial=" + serial, block) && UnpackSave(block, user_data)) {
+      REXKRNL_INFO("Player account: the saves came back from the server ({} bytes)",
+                   block.size());
+    }
+  }
+  std::thread([serial, runtime, user_data, news_base] {
     // Once the game has its profile, then every half minute (the XP file
     // changes after matches).
     std::this_thread::sleep_for(std::chrono::seconds(5));
     std::filesystem::file_time_type synced{};
+    std::string saved_state;
     for (int round = 0;; ++round) {
       std::string news = rex::cvar::Query<std::string>("news_url");
       size_t slash = news.rfind('/');
@@ -368,9 +467,24 @@ void StartPlayerAccount(rex::Runtime* runtime) {
                              std::filesystem::last_write_time(AttachmentsPath(), choices_error)});
         }
       }
+      // The player's data, at most every 10 minutes when it changed.
+      if (!news_base.empty() && round % 20 == 0) {
+        std::string state = SaveState(user_data);
+        if (state != saved_state && HasCampaignSave(user_data)) {
+          std::string answer;
+          if (HttpPost(news_base + "/save?serial=" + serial, PackSave(user_data), answer)) {
+            saved_state = state;
+          }
+        }
+      }
       std::this_thread::sleep_for(std::chrono::seconds(30));
     }
   }).detach();
+}
+
+std::string ConsoleId() {
+  std::lock_guard<std::mutex> lock(account_mutex);
+  return serial_number;
 }
 
 bool PlayerBanned(std::string* reason) {

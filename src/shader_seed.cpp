@@ -7,16 +7,23 @@
 
 #include "shader_seed.h"
 
+#include <chrono>
 #include <cstdint>
 #include <cstring>
 #include <fstream>
+#include <map>
 #include <sstream>
 #include <string>
+#include <thread>
 #include <unordered_set>
 #include <vector>
 
+#include <rex/cvar.h>
 #include <rex/hash.h>
 #include <rex/logging.h>
+
+#include "news_hooks.h"
+#include "player_account.h"
 
 namespace {
 
@@ -133,4 +140,61 @@ void MergeShaderSeed(const std::filesystem::path& seed_folder,
       Merge(path, storage / path.filename());
     }
   }
+}
+
+void StartSharedShaders(const std::filesystem::path& seed_folder,
+                        const std::filesystem::path& cache_root) {
+  std::string news = rex::cvar::Query<std::string>("news_url");
+  size_t slash = news.rfind('/');
+  if (slash == std::string::npos || slash <= 7) {
+    return;
+  }
+  std::thread([url = news.substr(0, slash) + "/shaders/", seed_folder, cache_root] {
+    const std::filesystem::path storage = cache_root / "shaders" / "shareable";
+    const std::filesystem::path remote = cache_root / "shaders" / "remote";
+    std::error_code error;
+    std::filesystem::create_directories(remote, error);
+    // Once the game runs, for the next start.
+    std::this_thread::sleep_for(std::chrono::seconds(60));
+    std::vector<std::filesystem::path> names;
+    for (const auto& entry : std::filesystem::directory_iterator(seed_folder, error)) {
+      const std::filesystem::path path = entry.path();
+      if (path.extension() == ".xsh" || path.extension() == ".xpso") {
+        names.push_back(path.filename());
+      }
+    }
+    for (const auto& name : names) {
+      const size_t header = name.extension() == ".xsh" ? 8 : 12;
+      const std::string seed = Read(seed_folder / name);
+      std::string body;
+      if (seed.size() < header || !HttpGet(url + name.string(), body) || body.size() <= header ||
+          body.compare(0, header, seed, 0, header) != 0) {
+        continue;
+      }
+      std::filesystem::path temporary = remote / name;
+      temporary += ".tmp";
+      {
+        std::ofstream file(temporary, std::ios::binary | std::ios::trunc);
+        file.write(body.data(), std::streamsize(body.size()));
+      }
+      std::filesystem::rename(temporary, remote / name, error);
+      REXLOG_INFO("Shaders: {} shared ({} bytes) for the next start", name.string(), body.size());
+    }
+    // This console's, when they grew.
+    std::map<std::filesystem::path, uintmax_t> sent;
+    for (;;) {
+      const std::string id = ConsoleId();
+      for (const auto& name : names) {
+        uintmax_t size = std::filesystem::file_size(storage / name, error);
+        if (id.empty() || error || size == sent[name]) {
+          continue;
+        }
+        std::string answer;
+        if (HttpPost(url + name.string() + "?serial=" + id, Read(storage / name), answer)) {
+          sent[name] = size;
+        }
+      }
+      std::this_thread::sleep_for(std::chrono::minutes(10));
+    }
+  }).detach();
 }

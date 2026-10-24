@@ -21,7 +21,15 @@ are included — you need your own copy. See [CREDITS.md](CREDITS.md).
   when the game loads them (`tools/make_texture_patches.py`).
 - Shaders from earlier play shipped in the release (`shaders/`), merged into
   the player's own storage at startup and compiled before the menu
-  (`src/shader_seed.cpp`), so they don't stutter the first time.
+  (`src/shader_seed.cpp`), so they don't stutter the first time; the
+  consoles also share theirs through the server, for the next start.
+- DualSense: rumble, adaptive triggers in play (R2 a gun's trigger, L2 a
+  light resistance) and the light bar (`src/dualsense.cpp`); the menus at up
+  to 60 FPS (`src/frame_rate.cpp`).
+- Attachment credits (one per rank) and the attachments bought, kept on the
+  server too; the saves backed up there and restored on a new install
+  (`src/player_account.cpp`); a notice in the Ghost Feed when a newer release
+  is out.
 - System Link over the LAN or through a relay server ("Online (VPS)"), picked
   in the multiplayer menu (`src/connection_menu.cpp`).
 - System Link progression: class XP and ranks, kept per console on the
@@ -51,5 +59,6 @@ its `assets/` and set `grfs.toml` (`system_link_relay`, `news_url`).
 ## Server
 
 `tools/news_server.py` (news, donors, support screen, players and bans, with
-an admin page) and the relay `system_link_relay.py` of rexglue-ps5, both
+an admin page; a public `/ranking` page, level-ups on a Discord webhook, the
+shared shaders and the saves' backups) and the relay `system_link_relay.py` of rexglue-ps5, both
 plain Python 3.

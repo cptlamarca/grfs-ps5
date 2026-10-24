@@ -6,11 +6,13 @@
 // The file has one message per line, its fields separated by tabs:
 //   YYYY-MM-DD HH:MM <tab> category <tab> author <tab> title <tab> text
 // with "\n", "\t" and "\\" escaped. The category (SP, MP, CIS, WEB, MOB, XBLA
-// or nothing) picks the feed's tab.
+// or nothing) picks the feed's tab. When the server's /version.txt names
+// another release than this one, a message about it comes first.
 
 #include <algorithm>
 #include <chrono>
 #include <cstring>
+#include <ctime>
 #include <mutex>
 #include <sstream>
 #include <string>
@@ -18,13 +20,17 @@
 #include <vector>
 
 #include <arpa/inet.h>
+#include <errno.h>
+#include <fcntl.h>
 #include <netdb.h>
 #include <netinet/in.h>
+#include <poll.h>
 #include <sys/socket.h>
 #include <sys/time.h>
 #include <unistd.h>
 
 #include "news_hooks.h"
+#include "version.h"
 
 #include <rex/cvar.h>
 #include <rex/hook.h>
@@ -107,6 +113,31 @@ void StartFetch() {
     std::string body;
     bool ok = HttpGet(url, body);
     std::vector<News> items = ok ? ParseNews(body) : std::vector<News>();
+    std::string latest;
+    if (ok && HttpGet(url.substr(0, url.rfind('/')) + "/version.txt", latest)) {
+      latest.erase(latest.find_last_not_of(" \r\n") + 1);
+      if (latest.rfind("v", 0) == 0 && latest != GRFS_VERSION) {
+        bool portuguese = rex::cvar::Query<uint32_t>("user_language") == 9;
+        auto now = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
+        std::tm local{};
+        localtime_r(&now, &local);
+        News notice;
+        notice.year = local.tm_year + 1900;
+        notice.month = local.tm_mon + 1;
+        notice.day = local.tm_mday;
+        notice.hour = local.tm_hour;
+        notice.minute = local.tm_min;
+        notice.author = "GR:FS PS5";
+        notice.title = (portuguese ? "Nova versão disponível: " : "New version available: ") +
+                       latest;
+        notice.text = std::string(portuguese ? "Você tem a " : "You have ") + GRFS_VERSION +
+                      (portuguese ? ". Atualize pela RecompStore ou em "
+                                    "github.com/lamarkingru/grfs-ps5"
+                                  : ". Update from the RecompStore or "
+                                    "github.com/lamarkingru/grfs-ps5");
+        items.insert(items.begin(), std::move(notice));
+      }
+    }
     std::lock_guard<std::mutex> lock(news_mutex);
     if (ok) {
       news = std::move(items);
@@ -184,7 +215,20 @@ bool HttpRequest(const std::string& url, const std::string* post_body, std::stri
   setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
   setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
   std::string response;
-  if (connect(fd, reinterpret_cast<sockaddr*>(&address), sizeof(address)) == 0) {
+  // (connecting gives up after 5 seconds: a server that's down doesn't hold
+  // the game up)
+  int flags = fcntl(fd, F_GETFL, 0);
+  fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+  bool connected = connect(fd, reinterpret_cast<sockaddr*>(&address), sizeof(address)) == 0;
+  if (!connected && errno == EINPROGRESS) {
+    pollfd waiting{fd, POLLOUT, 0};
+    int failure = 0;
+    socklen_t length = sizeof(failure);
+    connected = poll(&waiting, 1, 5000) == 1 &&
+                getsockopt(fd, SOL_SOCKET, SO_ERROR, &failure, &length) == 0 && failure == 0;
+  }
+  fcntl(fd, F_SETFL, flags);
+  if (connected) {
     std::string request = (post_body ? "POST " : "GET ") + path + " HTTP/1.0\r\nHost: " +
                           host_port + "\r\nConnection: close\r\n";
     if (post_body) {
@@ -193,7 +237,13 @@ bool HttpRequest(const std::string& url, const std::string* post_body, std::stri
     } else {
       request += "\r\n";
     }
-    if (send(fd, request.data(), request.size(), 0) == ssize_t(request.size())) {
+    // (a big body takes more than one send)
+    size_t sent = 0;
+    for (ssize_t n; sent < request.size() &&
+                    (n = send(fd, request.data() + sent, request.size() - sent, 0)) > 0;) {
+      sent += size_t(n);
+    }
+    if (sent == request.size()) {
       char buffer[4096];
       for (ssize_t n; (n = recv(fd, buffer, sizeof(buffer), 0)) > 0;) {
         response.append(buffer, size_t(n));

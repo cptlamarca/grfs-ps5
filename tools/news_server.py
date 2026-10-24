@@ -12,7 +12,17 @@ in --file (and support.json and donors.json next to it).
 PS5 games register at POST /player (their console's serial number, account
 name and class XP), kept in players.json next to --file: the page lists
 them, bans them from the online (tools/system_link_relay.py --players reads
-the same file) and sets or resets their XP.
+the same file) and sets or resets their XP. /ranking is a public page of
+their levels; with --webhook (a file holding a Discord webhook's URL) a class
+reaching a new level is announced there.
+
+POST /save?serial=... keeps a game's data (its saves, as one block; the one
+before it too) in saves/ next to --file, GET /save?serial=... gives it back.
+
+/version.txt gives the port's latest release (from GitHub, checked hourly).
+/shaders/NAME is a shader storage file (shaders/ next to --file) that games
+add to with POST /shaders/NAME?serial=..., merged record by record (needs
+the xxhash module to check them).
 """
 
 import argparse
@@ -24,8 +34,74 @@ import http.server
 import json
 import os
 import threading
+import time
+import urllib.parse
+import urllib.request
+
+try:
+    import xxhash
+except ImportError:
+    xxhash = None
 
 CLASSES = 6
+CLASS_NAMES = ["Batedor", "Engenheiro", "Atirador"]
+# The XP each level takes (the game's rank table).
+RANKS = [0, 1000, 3500, 7000, 11500, 17000, 23500, 31500, 40500, 50500, 61500, 73500, 86500,
+         100500, 115500, 131500, 148500, 166500, 185500, 205000, 225500, 247000, 269500, 293000,
+         317000, 342000, 368000, 394500, 422000, 450500, 479500, 509500, 540000, 571500, 603500,
+         636500, 670000, 704500, 739500, 775000, 811500, 848500, 886000, 924500, 963500, 1003000,
+         1043000, 1084000, 1125500, 1167000, 1208500]
+RELEASES = "https://api.github.com/repos/lamarkingru/grfs-ps5/releases/latest"
+SHADER_NAME = re.compile(r"^[0-9A-F]{8}\.(xsh|(fsi|fbo)\.vk\.xpso)$")
+
+
+def level(xp):
+    return max(i for i, need in enumerate(RANKS) if xp >= need)
+
+
+def merge_shaders(old, new, name):
+    """Adds the valid records of new to old (shader storage files: a header,
+    then records checked by their XXH3 hash, as src/shader_seed.cpp)."""
+    shaders = name.endswith(".xsh")
+    header = 8 if shaders else 12
+
+    def records(data, size=0):
+        out, at = [], header
+        while at + (12 if shaders else size) <= len(data):
+            if shaders:
+                count = int.from_bytes(data[at + 8:at + 12], "little") & 0x7FFFFFFF
+                end = at + 12 + count * 4
+                body = data[at + 12:end]
+            else:
+                end = at + size
+                body = data[at + 8:end]
+            if end > len(data) or xxhash.xxh3_64_intdigest(body) != \
+                    int.from_bytes(data[at:at + 8], "little"):
+                break
+            out.append(data[at:end])
+            at = end
+        return out
+
+    def record_size(data):
+        for size in range(16, min(len(data) - header, 4096) + 1):
+            if (len(data) - header) % size == 0 and xxhash.xxh3_64_intdigest(
+                    data[header + 8:header + size]) == int.from_bytes(data[header:header + 8],
+                                                                       "little"):
+                return size
+        return 0
+
+    if len(new) <= header:
+        return old
+    # (another format version: the newest game's wins)
+    if len(old) <= header or old[:header] != new[:header]:
+        old = new[:header]
+    size = 0 if shaders else record_size(new) or record_size(old)
+    if not shaders and not size:
+        return old
+    kept = records(old, size)
+    seen = {r[:8] for r in kept}
+    added = [r for r in records(new, size) if r[:8] not in seen and not seen.add(r[:8])]
+    return old[:header] + b"".join(kept + added)
 SERIAL = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 
 CATEGORIES = ["", "MP", "SP", "CIS", "WEB", "MOB", "XBLA"]
@@ -199,6 +275,33 @@ fetch("api/support").then(r => r.json()).then(s => SUPPORT.forEach(k => {
 """
 
 
+RANKING = """<!doctype html>
+<html lang="pt-BR"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="refresh" content="60">
+<title>Ranking GR:FS PS5</title>
+<style>
+:root { color-scheme: dark; }
+body { margin: 0; font: 16px/1.4 system-ui, sans-serif; background: #070b12; color: #e8eef5; }
+main { max-width: 860px; margin: 0 auto; padding: 24px 16px; }
+h1 { font-size: 24px; margin: 0 0 4px; letter-spacing: .04em; }
+p { color: #93a3b6; margin: 0 0 20px; }
+table { width: 100%; border-collapse: collapse; background: #0f1724; border-radius: 10px;
+        overflow: hidden; }
+th, td { padding: 10px 12px; text-align: left; border-bottom: 1px solid #1c2738; }
+th { color: #8fd0ee; font-size: 13px; text-transform: uppercase; letter-spacing: .06em; }
+td:nth-child(n+3), th:nth-child(n+3) { text-align: right; }
+.on { color: #4ade80; font-size: 13px; margin-left: 6px; }
+@media (max-width: 560px) { th, td { padding: 8px 6px; font-size: 14px; } }
+</style></head><body><main>
+<h1>Ghost Recon: Future Soldier — PS5</h1>
+<p>Níveis por classe no multijogador · %COUNT% jogadores · %ONLINE% online agora</p>
+<table><thead><tr><th>#</th><th>Jogador</th><th>Batedor</th><th>Engenheiro</th>
+<th>Atirador</th><th>XP</th></tr></thead><tbody>%ROWS%</tbody></table>
+</main></body></html>
+"""
+
+
 def one_line(text):
     return " ".join(str(text).split())
 
@@ -208,9 +311,13 @@ def escape(text):
 
 
 class Store:
-    def __init__(self, path):
+    def __init__(self, path, webhook=None):
         self.path = path
+        self.webhook = webhook
+        self.version = ("", 0.0)
         folder = os.path.dirname(os.path.abspath(path))
+        self.shaders_path = os.path.join(folder, "shaders")
+        self.saves_path = os.path.join(folder, "saves")
         self.support_path = os.path.join(folder, "support.json")
         self.donors_path = os.path.join(folder, "donors.json")
         self.players_path = os.path.join(folder, "players.json")
@@ -309,7 +416,12 @@ class Store:
                 # (the XP the page reset: the game's copy is replaced)
                 player["reset"] = False
             elif xp:
+                before = list(player["xp"])
                 player["xp"] = [max(a, b) for a, b in zip(player["xp"], xp)]
+                for i, name in enumerate(CLASS_NAMES):
+                    if level(player["xp"][i]) > level(before[i]):
+                        self.announce(f"🎖️ **{player.get('name') or 'Um jogador'}** subiu o "
+                                      f"{name} para o nível {level(player['xp'][i])}!")
             if not replace:
                 for point, choice in (choices or {}).items():
                     player["choices"].setdefault(point, choice)
@@ -343,6 +455,107 @@ class Store:
                 player["reset"] = True
             self.save_players(players)
             return True
+
+    def announce(self, text):
+        """Posts to the Discord webhook, in the background."""
+        if not self.webhook:
+            return
+
+        def post():
+            try:
+                with open(self.webhook, encoding="utf-8") as f:
+                    url = f.read().strip()
+                request = urllib.request.Request(
+                    url, json.dumps({"content": text}).encode(),
+                    {"Content-Type": "application/json", "User-Agent": "grfs-news"})
+                urllib.request.urlopen(request, timeout=10).close()
+            except OSError as error:
+                print(f"webhook: {error}", flush=True)
+
+        threading.Thread(target=post, daemon=True).start()
+
+    def latest_version(self):
+        """The latest release's tag, asked from GitHub at most hourly."""
+        tag, checked = self.version
+        if time.time() - checked > 3600:
+            try:
+                request = urllib.request.Request(RELEASES, headers={"User-Agent": "grfs-news"})
+                with urllib.request.urlopen(request, timeout=10) as response:
+                    tag = json.load(response).get("tag_name", tag)
+            except (OSError, ValueError) as error:
+                print(f"version: {error}", flush=True)
+            self.version = (tag, time.time())
+        return tag
+
+    def ranking(self):
+        """The public page of the players' levels."""
+        now = datetime.datetime.now()
+        rows = []
+        for p in self.load_players().values():
+            if p.get("banned"):
+                continue
+            try:
+                seen = datetime.datetime.strptime(p.get("last_seen", ""), "%Y-%m-%d %H:%M")
+            except ValueError:
+                seen = None
+            online = seen is not None and now - seen < datetime.timedelta(minutes=10)
+            levels = [level(x) for x in p["xp"][:3]]
+            rows.append((sum(p["xp"][:3]), p.get("name") or "?", levels, online))
+        rows.sort(key=lambda r: -r[0])
+        def html(text):
+            return (str(text).replace("&", "&amp;").replace("<", "&lt;")
+                    .replace(">", "&gt;").replace('"', "&quot;"))
+        body = "".join(
+            f"<tr><td>{i + 1}</td><td>{html(name)}{' <span class=on>● online</span>' if on else ''}"
+            f"</td>{''.join(f'<td>{lv}</td>' for lv in levels)}"
+            f"<td>{f'{xp:,}'.replace(',', '.')}</td></tr>"
+            for i, (xp, name, levels, on) in enumerate(rows))
+        online = sum(1 for r in rows if r[3])
+        return RANKING.replace("%ROWS%", body or "<tr><td colspan=6>Ninguém ainda.</td></tr>") \
+            .replace("%ONLINE%", str(online)).replace("%COUNT%", str(len(rows)))
+
+    def registered(self, serial):
+        return serial in self.load_players()
+
+    def known(self, serial):
+        player = self.load_players().get(serial)
+        return player is not None and not player.get("banned")
+
+    def shader_file(self, name):
+        try:
+            with open(os.path.join(self.shaders_path, name), "rb") as f:
+                return f.read()
+        except FileNotFoundError:
+            return None
+
+    def add_shaders(self, name, data):
+        with self.lock:
+            old = self.shader_file(name) or b""
+            merged = merge_shaders(old, data, name)
+            if merged != old:
+                os.makedirs(self.shaders_path, exist_ok=True)
+                path = os.path.join(self.shaders_path, name)
+                with open(path + ".tmp", "wb") as f:
+                    f.write(merged)
+                os.replace(path + ".tmp", path)
+            return len(merged)
+
+    def save_block(self, serial):
+        try:
+            with open(os.path.join(self.saves_path, serial + ".bin"), "rb") as f:
+                return f.read()
+        except FileNotFoundError:
+            return None
+
+    def keep_save(self, serial, data):
+        with self.lock:
+            os.makedirs(self.saves_path, exist_ok=True)
+            path = os.path.join(self.saves_path, serial + ".bin")
+            if os.path.exists(path):
+                os.replace(path, path + ".1")
+            with open(path + ".tmp", "wb") as f:
+                f.write(data)
+            os.replace(path + ".tmp", path)
 
     def donors_text(self):
         return "".join(f"{d['name']}\t{d['message']}\n" for d in self.load_donors())
@@ -395,6 +608,23 @@ def make_handler(store, password):
             elif self.path == "/support.txt":
                 text = store.support_text()
                 self.send(200 if text else 404, text or "not set")
+            elif self.path == "/version.txt":
+                self.send(200, store.latest_version() + "\n")
+            elif self.path.startswith("/save?"):
+                serial = urllib.parse.parse_qs(self.path[6:]).get("serial", [""])[0]
+                data = store.save_block(serial) if SERIAL.match(serial) else None
+                if data is None:
+                    self.send(404, "no save")
+                else:
+                    self.send(200, data, "application/octet-stream")
+            elif self.path == "/ranking":
+                self.send(200, store.ranking(), "text/html; charset=utf-8")
+            elif self.path.startswith("/shaders/") and SHADER_NAME.match(self.path[9:]):
+                data = store.shader_file(self.path[9:])
+                if data is None:
+                    self.send(404, "none yet")
+                else:
+                    self.send(200, data, "application/octet-stream")
             elif self.path in ("/", "/index.html"):
                 if self.authorized():
                     self.send(200, PAGE.replace("%CATEGORIES%", json.dumps(CATEGORIES)),
@@ -416,6 +646,37 @@ def make_handler(store, password):
             # numbers, choices as ID:choice pairs, spent as three numbers,
             # bought as class:weapon:hex), answered alike (banned, reason, xp,
             # choices, spent, bought, replace).
+            url = urllib.parse.urlsplit(self.path)
+            if url.path == "/save":
+                # (a ban is from the online only: the saves are kept anyway)
+                serial = urllib.parse.parse_qs(url.query).get("serial", [""])[0]
+                length = int(self.headers.get("Content-Length", "0"))
+                if not SERIAL.match(serial) or not store.registered(serial):
+                    self.send(403, "unknown console")
+                elif length > 32 * 1024 * 1024:
+                    self.send(413, "too large")
+                else:
+                    data = self.rfile.read(length)
+                    if not data.startswith(b"GRSV1\n"):
+                        self.send(400, "not a save")
+                    else:
+                        store.keep_save(serial, data)
+                        self.send(200, "ok")
+                return
+            if url.path.startswith("/shaders/") and SHADER_NAME.match(url.path[9:]):
+                # A game's shader storage, added to the one shared.
+                serial = urllib.parse.parse_qs(url.query).get("serial", [""])[0]
+                length = int(self.headers.get("Content-Length", "0"))
+                if not xxhash:
+                    self.send(503, "no xxhash")
+                elif not SERIAL.match(serial) or not store.known(serial):
+                    self.send(403, "unknown console")
+                elif length > 16 * 1024 * 1024:
+                    self.send(413, "too large")
+                else:
+                    size = store.add_shaders(url.path[9:], self.rfile.read(length))
+                    self.send(200, f"{size}\n")
+                return
             if self.path != "/player":
                 self.send(404, "not found")
                 return
@@ -514,10 +775,11 @@ def main():
     parser.add_argument("--port", type=int, default=37001)
     parser.add_argument("--file", default="news.json")
     parser.add_argument("--password", default=os.environ.get("NEWS_PASSWORD"))
+    parser.add_argument("--webhook", help="file holding a Discord webhook's URL")
     args = parser.parse_args()
     if not args.password:
         parser.error("give --password or NEWS_PASSWORD")
-    store = Store(args.file)
+    store = Store(args.file, args.webhook)
     server = http.server.ThreadingHTTPServer(("", args.port), make_handler(store, args.password))
     print(f"news on port {args.port}: page http://HOST:{args.port}/, game news_url "
           f"http://HOST:{args.port}/news.txt", flush=True)

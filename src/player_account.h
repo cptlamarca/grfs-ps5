@@ -15,5 +15,8 @@ class Runtime;
 // From the app, before the game starts.
 void StartPlayerAccount(rex::Runtime* runtime);
 
+// The console ID the server knows this console by, empty without one.
+std::string ConsoleId();
+
 // Whether this console is banned from the online, and why.
 bool PlayerBanned(std::string* reason = nullptr);

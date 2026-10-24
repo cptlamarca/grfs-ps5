@@ -269,7 +269,10 @@ GrfsApp::CreateAchievementNotificationDialog() {
 
 void GrfsApp::OnPreLaunchModule() {
   PatchLanguageFiles(game_data_root());
-  MergeShaderSeed(rex::filesystem::GetExecutableFolder() / "shaders", runtime()->cache_root());
+  const std::filesystem::path seed = rex::filesystem::GetExecutableFolder() / "shaders";
+  MergeShaderSeed(seed, runtime()->cache_root());
+  MergeShaderSeed(runtime()->cache_root() / "shaders" / "remote", runtime()->cache_root());
+  StartSharedShaders(seed, runtime()->cache_root());
   StartPlayerAccount(runtime());
   // The XEX only has the achievements in English.
   if (IsPortuguese()) {
