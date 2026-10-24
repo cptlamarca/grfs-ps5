@@ -204,7 +204,6 @@ void PatchConnectionMenu(rex::memory::Memory* memory) {
     label_keys.clear();
   }
   int count = 0;
-  bool done = false;
   for (uint32_t heap_address : {0x00000000u, 0x40000000u}) {
     rex::memory::BaseHeap* heap = memory->LookupHeap(heap_address);
     if (!heap) {
@@ -212,7 +211,7 @@ void PatchConnectionMenu(rex::memory::Memory* memory) {
     }
     uint32_t address = heap->heap_base();
     const uint32_t end = heap->heap_base() + heap->heap_size();
-    while (address < end && !done) {
+    while (address < end) {
       rex::memory::HeapAllocationInfo info;
       if (!heap->QueryRegionInfo(address, &info)) {
         break;
@@ -228,20 +227,17 @@ void PatchConnectionMenu(rex::memory::Memory* memory) {
         // One pass (fast) for their common end, then their starts.
         constexpr std::string_view kEnd("\0connectionTypes", 16);
         const size_t start = kPoolTexts.size() - kEnd.size();
-        for (char* hit = FindBytes(data, size, kEnd); hit && !done;
+        for (char* hit = FindBytes(data, size, kEnd); hit;
              hit = FindBytes(hit + 1, data + size - hit - 1, kEnd)) {
           size_t at = size_t(hit - data);
           if (at < start) {
             continue;
           }
           at -= start;
-          const bool fresh = !std::memcmp(data + at, kPoolTexts.data(), start);
-          if (fresh || !std::memcmp(data + at, kPatchedTexts.data(), start)) {
+          if (!std::memcmp(data + at, kPoolTexts.data(), start) ||
+              !std::memcmp(data + at, kPatchedTexts.data(), start)) {
             PatchScreen(data, size, info.base_address, at);
             ++count;
-            // The screen just loaded is the one copy not patched yet: once
-            // it is, the rest of the heaps (older copies) can wait.
-            done = fresh;
           }
         }
       }
@@ -293,7 +289,9 @@ REX_HOOK_RAW(sub_822E4B18) {
     online = !lan;
   }
   __imp__sub_822E4B18(ctx, base);
-  if (command == "ScreenLoaded" && value == "Multiplayer.feu") {
+  // (the campaign's and Guerrilla's screens list the connections too)
+  if (command == "ScreenLoaded" &&
+      (value == "Multiplayer.feu" || value == "HoldTheLine.feu" || value == "Campaign.feu")) {
     PatchConnectionMenu(rex::system::kernel_state()->memory());
     std::lock_guard<std::mutex> lock(labels_mutex);
     online = !on_lan;
