@@ -11,7 +11,9 @@
 #include <cstdint>
 #include <cstring>
 #include <fstream>
+#include <future>
 #include <map>
+#include <memory>
 #include <sstream>
 #include <string>
 #include <thread>
@@ -142,32 +144,53 @@ void MergeShaderSeed(const std::filesystem::path& seed_folder,
   }
 }
 
-void StartSharedShaders(const std::filesystem::path& seed_folder,
-                        const std::filesystem::path& cache_root) {
+namespace {
+
+// The news server's /shaders/ (next to news_url), or empty without one.
+std::string SharedUrl() {
   std::string news = rex::cvar::Query<std::string>("news_url");
   size_t slash = news.rfind('/');
   if (slash == std::string::npos || slash <= 7) {
+    return {};
+  }
+  return news.substr(0, slash) + "/shaders/";
+}
+
+// The storage files the app ships (their names on the server).
+std::vector<std::filesystem::path> SharedNames(const std::filesystem::path& seed_folder) {
+  std::error_code error;
+  std::vector<std::filesystem::path> names;
+  for (const auto& entry : std::filesystem::directory_iterator(seed_folder, error)) {
+    const std::filesystem::path path = entry.path();
+    if (path.extension() == ".xsh" || path.extension() == ".xpso") {
+      names.push_back(path.filename());
+    }
+  }
+  return names;
+}
+
+}  // namespace
+
+void FetchSharedShaders(const std::filesystem::path& seed_folder,
+                        const std::filesystem::path& cache_root) {
+  const std::string url = SharedUrl();
+  if (url.empty()) {
     return;
   }
-  std::thread([url = news.substr(0, slash) + "/shaders/", seed_folder, cache_root] {
-    const std::filesystem::path storage = cache_root / "shaders" / "shareable";
-    const std::filesystem::path remote = cache_root / "shaders" / "remote";
+  // Waited for a few seconds; a slower download goes on in the background
+  // and is merged at the next start instead.
+  auto done = std::make_shared<std::promise<void>>();
+  std::future<void> finished = done->get_future();
+  std::thread([url, seed_folder, remote = cache_root / "shaders" / "remote", done] {
     std::error_code error;
     std::filesystem::create_directories(remote, error);
-    // Once the game runs, for the next start.
-    std::this_thread::sleep_for(std::chrono::seconds(60));
-    std::vector<std::filesystem::path> names;
-    for (const auto& entry : std::filesystem::directory_iterator(seed_folder, error)) {
-      const std::filesystem::path path = entry.path();
-      if (path.extension() == ".xsh" || path.extension() == ".xpso") {
-        names.push_back(path.filename());
-      }
-    }
-    for (const auto& name : names) {
+    for (const auto& name : SharedNames(seed_folder)) {
       const size_t header = name.extension() == ".xsh" ? 8 : 12;
       const std::string seed = Read(seed_folder / name);
+      const std::string id = ConsoleId();
       std::string body;
-      if (seed.size() < header || !HttpGet(url + name.string(), body) || body.size() <= header ||
+      if (seed.size() < header ||
+          !HttpGet(url + name.string() + (id.empty() ? "" : "?serial=" + id), body) || body.size() <= header ||
           body.compare(0, header, seed, 0, header) != 0) {
         continue;
       }
@@ -178,9 +201,27 @@ void StartSharedShaders(const std::filesystem::path& seed_folder,
         file.write(body.data(), std::streamsize(body.size()));
       }
       std::filesystem::rename(temporary, remote / name, error);
-      REXLOG_INFO("Shaders: {} shared ({} bytes) for the next start", name.string(), body.size());
+      REXLOG_INFO("Shaders: {} shared ({} bytes)", name.string(), body.size());
     }
+    done->set_value();
+  }).detach();
+  if (finished.wait_for(std::chrono::seconds(8)) != std::future_status::ready) {
+    REXLOG_INFO("Shaders: the shared ones are still downloading, for the next start");
+  }
+}
+
+void StartSharedShaders(const std::filesystem::path& seed_folder,
+                        const std::filesystem::path& cache_root) {
+  const std::string url = SharedUrl();
+  if (url.empty()) {
+    return;
+  }
+  std::thread([url, names = SharedNames(seed_folder),
+               storage = cache_root / "shaders" / "shareable"] {
+    // Once the game runs.
+    std::this_thread::sleep_for(std::chrono::seconds(60));
     // This console's, when they grew.
+    std::error_code error;
     std::map<std::filesystem::path, uintmax_t> sent;
     for (;;) {
       const std::string id = ConsoleId();

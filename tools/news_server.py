@@ -22,7 +22,14 @@ before it too) in saves/ next to --file, GET /save?serial=... gives it back.
 /version.txt gives the port's latest release (from GitHub, checked hourly).
 /shaders/NAME is a shader storage file (shaders/ next to --file) that games
 add to with POST /shaders/NAME?serial=..., merged record by record (needs
-the xxhash module to check them).
+the xxhash module to check them); the consoles sending and downloading them
+are counted in stats.json next to --file, shown on the page with the
+players active and who is in the online's room now (relay_room.json, written
+by tools/system_link_relay.py next to players.json).
+
+With --admin-local the page and its /api/ only answer the local machine: a
+TLS proxy in front of it (Caddy, giving it its https:// address), so the
+password never goes over plain HTTP.
 """
 
 import argparse
@@ -59,49 +66,56 @@ def level(xp):
     return max(i for i, need in enumerate(RANKS) if xp >= need)
 
 
+def shader_records(data, shaders, size=0):
+    """The valid records of a shader storage file (a header, then records
+    checked by their XXH3 hash, as src/shader_seed.cpp), up to the first
+    damaged one."""
+    header = 8 if shaders else 12
+    out, at = [], header
+    while at + (12 if shaders else size) <= len(data):
+        if shaders:
+            count = int.from_bytes(data[at + 8:at + 12], "little") & 0x7FFFFFFF
+            end = at + 12 + count * 4
+            body = data[at + 12:end]
+        else:
+            end = at + size
+            body = data[at + 8:end]
+        if end > len(data) or xxhash.xxh3_64_intdigest(body) != \
+                int.from_bytes(data[at:at + 8], "little"):
+            break
+        out.append(data[at:end])
+        at = end
+    return out
+
+
+def pipeline_record_size(data):
+    """A pipeline storage's record size: the one whose first record checks out."""
+    for size in range(16, min(len(data) - 12, 4096) + 1):
+        if (len(data) - 12) % size == 0 and xxhash.xxh3_64_intdigest(
+                data[12 + 8:12 + size]) == int.from_bytes(data[12:12 + 8], "little"):
+            return size
+    return 0
+
+
 def merge_shaders(old, new, name):
-    """Adds the valid records of new to old (shader storage files: a header,
-    then records checked by their XXH3 hash, as src/shader_seed.cpp)."""
+    """Adds the valid records of new to old."""
     shaders = name.endswith(".xsh")
     header = 8 if shaders else 12
-
-    def records(data, size=0):
-        out, at = [], header
-        while at + (12 if shaders else size) <= len(data):
-            if shaders:
-                count = int.from_bytes(data[at + 8:at + 12], "little") & 0x7FFFFFFF
-                end = at + 12 + count * 4
-                body = data[at + 12:end]
-            else:
-                end = at + size
-                body = data[at + 8:end]
-            if end > len(data) or xxhash.xxh3_64_intdigest(body) != \
-                    int.from_bytes(data[at:at + 8], "little"):
-                break
-            out.append(data[at:end])
-            at = end
-        return out
-
-    def record_size(data):
-        for size in range(16, min(len(data) - header, 4096) + 1):
-            if (len(data) - header) % size == 0 and xxhash.xxh3_64_intdigest(
-                    data[header + 8:header + size]) == int.from_bytes(data[header:header + 8],
-                                                                       "little"):
-                return size
-        return 0
-
     if len(new) <= header:
         return old
     # (another format version: the newest game's wins)
     if len(old) <= header or old[:header] != new[:header]:
         old = new[:header]
-    size = 0 if shaders else record_size(new) or record_size(old)
+    size = 0 if shaders else pipeline_record_size(new) or pipeline_record_size(old)
     if not shaders and not size:
         return old
-    kept = records(old, size)
+    kept = shader_records(old, shaders, size)
     seen = {r[:8] for r in kept}
-    added = [r for r in records(new, size) if r[:8] not in seen and not seen.add(r[:8])]
+    added = [r for r in shader_records(new, shaders, size)
+             if r[:8] not in seen and not seen.add(r[:8])]
     return old[:header] + b"".join(kept + added)
+
+
 SERIAL = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 
 CATEGORIES = ["", "MP", "SP", "CIS", "WEB", "MOB", "XBLA"]
@@ -131,10 +145,23 @@ button { background:var(--line); color:var(--text); border:0; border-radius:5px;
 button.primary { background:var(--accent); color:#06121b; font-weight:600; }
 button.danger { background:transparent; color:var(--danger); border:1px solid var(--danger); }
 .actions { display:flex; gap:6px; justify-content:flex-end; }
+.stats { display:grid; grid-template-columns:repeat(auto-fit, minmax(150px, 1fr)); gap:8px;
+         margin-bottom:12px; }
+.stat { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:10px 14px; }
+.stat b { display:block; font-size:24px; font-variant-numeric:tabular-nums; }
+.stat span { color:var(--muted); font-size:12px; }
+table { width:100%; border-collapse:collapse; font-size:14px; }
+th, td { text-align:left; padding:5px 6px; border-bottom:1px solid var(--line); }
+th { color:var(--muted); font-weight:500; font-size:12px; }
+td.n, th.n { text-align:right; font-variant-numeric:tabular-nums; }
 .bar { position:sticky; bottom:0; background:var(--bg); padding:12px 0;
        display:flex; gap:8px; align-items:center; border-top:1px solid var(--line); }
 #status { color:var(--muted); }
 </style></head><body><main>
+<h1>ESTATÍSTICAS</h1>
+<p class="hint">Jogadores ativos, quem está na sala do online agora e os consoles que enviaram
+ou baixaram o cache de shaders compartilhado (contado desde 25/10/2026).</p>
+<div id="stats"></div>
 <h1>JOGADORES</h1>
 <p class="hint">Consoles PS5 que abriram o jogo, pelo ID do console. Banir bloqueia o online (VPS).
 O XP salvo ou zerado aqui substitui o do console na próxima sincronização (ao abrir o jogo, ou em até 5 minutos).
@@ -265,6 +292,30 @@ async function save() {
                                      put("api/donors", donors)]);
   status(results.every(r => r.ok) ? "salvo às " + new Date().toLocaleTimeString() : "erro ao salvar");
 }
+function renderStats(st) {
+  const box = document.getElementById("stats"); box.replaceChildren();
+  const tile = (n, label) => el("div", {className: "stat"}, el("b", {textContent: n}),
+                                el("span", {textContent: label}));
+  const files = Object.fromEntries(st.files.map(f => [f.name.endsWith(".xsh") ? "xsh" : "xpso", f]));
+  box.append(el("div", {className: "stats"},
+    tile(st.players, "jogadores"), tile(st.active_day, "ativos nas últimas 24 h"),
+    tile(st.active_week, "ativos nos últimos 7 dias"), tile(st.room.length, "na sala agora"),
+    tile(files.xsh ? files.xsh.records : 0, "shaders no cache"),
+    tile(files.xpso ? files.xpso.records : 0, "pipelines no cache")));
+  const table = (title, head, rows) => el("div", {className: "card"},
+    el("label", {textContent: title}),
+    rows.length ? el("table", {}, el("tr", {}, ...head.map(([h, n]) => el("th", {textContent: h, className: n ? "n" : ""}))),
+                     ...rows.map(r => el("tr", {}, ...r.map((v, i) => el("td", {textContent: v, className: head[i][1] ? "n" : ""})))))
+                : el("p", {className: "hint", textContent: "Ninguém."}));
+  box.append(table("Na sala do online agora", [["Jogador"], ["Endereço"], ["Desde"]],
+                   st.room.map(m => [m.who, m.address, m.since])));
+  const who = [["Console"], ["Vezes", 1], ["Primeira"], ["Última"]];
+  box.append(table("Enviaram shaders (a cada 10 min de jogo)", who,
+                   st.uploads.map(e => [e.who, e.count, e.first, e.last])));
+  box.append(table("Baixaram shaders (a cada abertura do jogo)", who,
+                   st.downloads.map(e => [e.who, e.count, e.first, e.last])));
+}
+fetch("api/stats").then(r => r.json()).then(renderStats);
 fetch("api/news").then(r => r.json()).then(n => { news = n; render(); });
 fetch("api/donors").then(r => r.json()).then(d => { donors = d; renderDonors(); });
 loadPlayers();
@@ -321,6 +372,8 @@ class Store:
         self.support_path = os.path.join(folder, "support.json")
         self.donors_path = os.path.join(folder, "donors.json")
         self.players_path = os.path.join(folder, "players.json")
+        self.stats_path = os.path.join(folder, "stats.json")
+        self.room_path = os.path.join(folder, "relay_room.json")
         self.lock = threading.Lock()
 
     def load(self):
@@ -521,6 +574,72 @@ class Store:
         player = self.load_players().get(serial)
         return player is not None and not player.get("banned")
 
+    def count(self, kind, key):
+        """A console (its serial, or "IP x" for an older game) sending or
+        downloading the shared shaders."""
+        now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+        with self.lock:
+            try:
+                with open(self.stats_path, encoding="utf-8") as f:
+                    stats = json.load(f)
+            except (OSError, ValueError):
+                stats = {}
+            entry = stats.setdefault(kind, {}).setdefault(key, {"count": 0, "first": now})
+            entry["count"] += 1
+            entry["last"] = now
+            with open(self.stats_path + ".tmp", "w", encoding="utf-8") as f:
+                json.dump(stats, f, indent=1)
+            os.replace(self.stats_path + ".tmp", self.stats_path)
+
+    def stats(self):
+        """The page's numbers: players active, the room, the shared shaders."""
+        try:
+            with open(self.stats_path, encoding="utf-8") as f:
+                stats = json.load(f)
+        except (OSError, ValueError):
+            stats = {}
+        try:
+            with open(self.room_path, encoding="utf-8") as f:
+                room = json.load(f)
+        except (OSError, ValueError):
+            room = []
+        players = self.load_players()
+        now = datetime.datetime.now()
+
+        def since(text):
+            try:
+                return now - datetime.datetime.strptime(text, "%Y-%m-%d %H:%M")
+            except (TypeError, ValueError):
+                return datetime.timedelta.max
+
+        def named(entries):
+            return sorted(({"who": players.get(key, {}).get("name") or key, **entry}
+                           for key, entry in entries.items()),
+                          key=lambda e: e.get("last", ""), reverse=True)
+
+        files = []
+        for name in sorted(os.listdir(self.shaders_path)) if os.path.isdir(self.shaders_path) else []:
+            if not SHADER_NAME.match(name):
+                continue
+            data = self.shader_file(name) or b""
+            shaders = name.endswith(".xsh")
+            records = len(shader_records(data, shaders, 0 if shaders else pipeline_record_size(data))) \
+                if xxhash else 0
+            files.append({"name": name, "bytes": len(data), "records": records})
+        for member in room:
+            member["who"] = players.get(member.get("serial", ""), {}).get("name") or member.get("serial") or "?"
+        return {
+            "players": len(players),
+            "active_day": sum(since(p.get("last_seen")) < datetime.timedelta(days=1)
+                              for p in players.values()),
+            "active_week": sum(since(p.get("last_seen")) < datetime.timedelta(days=7)
+                               for p in players.values()),
+            "room": room,
+            "uploads": named(stats.get("uploads", {})),
+            "downloads": named(stats.get("downloads", {})),
+            "files": files,
+        }
+
     def shader_file(self, name):
         try:
             with open(os.path.join(self.shaders_path, name), "rb") as f:
@@ -578,7 +697,7 @@ class Store:
         return "\n".join(lines) + "\n"
 
 
-def make_handler(store, password):
+def make_handler(store, password, admin_local=False):
     expected = "Basic " + base64.b64encode(f"admin:{password}".encode()).decode()
 
     class Handler(http.server.BaseHTTPRequestHandler):
@@ -595,6 +714,9 @@ def make_handler(store, password):
             self.wfile.write(data)
 
         def authorized(self):
+            if admin_local and self.client_address[0] not in ("127.0.0.1", "::1"):
+                self.send(403, "use the https:// address")
+                return False
             if hmac.compare_digest(self.headers.get("Authorization", ""), expected):
                 return True
             self.send(401, "login required", headers=[("WWW-Authenticate", 'Basic realm="Ghost Feed"')])
@@ -619,20 +741,28 @@ def make_handler(store, password):
                     self.send(200, data, "application/octet-stream")
             elif self.path == "/ranking":
                 self.send(200, store.ranking(), "text/html; charset=utf-8")
-            elif self.path.startswith("/shaders/") and SHADER_NAME.match(self.path[9:]):
-                data = store.shader_file(self.path[9:])
+            elif self.path.startswith("/shaders/") and \
+                    SHADER_NAME.match(urllib.parse.urlsplit(self.path).path[9:]):
+                url = urllib.parse.urlsplit(self.path)
+                data = store.shader_file(url.path[9:])
                 if data is None:
                     self.send(404, "none yet")
                 else:
                     self.send(200, data, "application/octet-stream")
+                    # (once per start: games download the .xsh first)
+                    if url.path.endswith(".xsh"):
+                        serial = urllib.parse.parse_qs(url.query).get("serial", [""])[0]
+                        store.count("downloads", serial if SERIAL.match(serial)
+                                    else "IP " + self.client_address[0])
             elif self.path in ("/", "/index.html"):
                 if self.authorized():
                     self.send(200, PAGE.replace("%CATEGORIES%", json.dumps(CATEGORIES)),
                               "text/html; charset=utf-8")
-            elif self.path in ("/api/news", "/api/support", "/api/donors", "/api/players"):
+            elif self.path in ("/api/news", "/api/support", "/api/donors", "/api/players",
+                               "/api/stats"):
                 if self.authorized():
                     data = {"/api/news": store.load, "/api/support": store.load_support,
-                            "/api/donors": store.load_donors,
+                            "/api/donors": store.load_donors, "/api/stats": store.stats,
                             "/api/players": lambda: sorted(store.load_players().values(),
                                                            key=lambda p: p.get("last_seen", ""),
                                                            reverse=True)}[self.path]()
@@ -676,6 +806,8 @@ def make_handler(store, password):
                 else:
                     size = store.add_shaders(url.path[9:], self.rfile.read(length))
                     self.send(200, f"{size}\n")
+                    if url.path.endswith(".xsh"):
+                        store.count("uploads", serial)
                 return
             if self.path != "/player":
                 self.send(404, "not found")
@@ -776,11 +908,13 @@ def main():
     parser.add_argument("--file", default="news.json")
     parser.add_argument("--password", default=os.environ.get("NEWS_PASSWORD"))
     parser.add_argument("--webhook", help="file holding a Discord webhook's URL")
+    parser.add_argument("--admin-local", action="store_true",
+                        help="the page only for the local machine (a TLS proxy)")
     args = parser.parse_args()
     if not args.password:
         parser.error("give --password or NEWS_PASSWORD")
     store = Store(args.file, args.webhook)
-    server = http.server.ThreadingHTTPServer(("", args.port), make_handler(store, args.password))
+    server = http.server.ThreadingHTTPServer(("", args.port), make_handler(store, args.password, args.admin_local))
     print(f"news on port {args.port}: page http://HOST:{args.port}/, game news_url "
           f"http://HOST:{args.port}/news.txt", flush=True)
     server.serve_forever()
