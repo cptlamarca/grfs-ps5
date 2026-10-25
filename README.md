@@ -22,7 +22,8 @@ are included — you need your own copy. See [CREDITS.md](CREDITS.md).
 - Shaders from earlier play shipped in the release (`shaders/`), merged into
   the player's own storage at startup and compiled before the menu
   (`src/shader_seed.cpp`), so they don't stutter the first time; the
-  consoles also share theirs through the server, for the next start.
+  consoles also share theirs through the server, downloaded before the game
+  loads.
 - DualSense: rumble, adaptive triggers in play (R2 a gun's trigger, L2 a
   light resistance) and the light bar (`src/dualsense.cpp`); the menus at up
   to 60 FPS (`src/frame_rate.cpp`).
