@@ -39,6 +39,10 @@ add_executable(grfs src/main.cpp src/grfs_app.cpp src/achievements_ui.cpp src/ac
     src/third_party/qrcodegen/qrcodegen.cpp
     src/trophy_sound.cpp)
 rexglue_setup_target(grfs GPU_PLUGINS xenos)
+# The ISO screen's wallpaper, built into the app (.incbin).
+set_source_files_properties(src/iso_screen.cpp PROPERTIES
+    COMPILE_DEFINITIONS "GRFS_ISO_BACKGROUND=\"${CMAKE_CURRENT_SOURCE_DIR}/assets/iso_background.png\""
+    OBJECT_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/assets/iso_background.png)
 if(REXSDK_DIR AND TARGET imgui)
     # SDK source tree: ImGui (built into the runtime) and xxHash (rex/hash.h)
     # are not on the public include path the way the installed SDK bundles them.

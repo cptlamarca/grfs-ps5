@@ -181,7 +181,7 @@ std::optional<rex::PathConfig> GrfsApp::OnFinalizePaths(
   }
   REXLOG_WARN("No game files in {}: showing the ISO screen", defaults.game_data_root.string());
   iso_screen_ = std::make_unique<IsoScreen>(
-      imgui_drawer(), font_, title_font_, defaults.game_data_root,
+      imgui_drawer(), immediate_drawer(), font_, title_font_, defaults.game_data_root,
       [this, defaults, resume = std::move(resume)] {
         // (after this draw: the screen goes, then the game starts)
         app_context().CallInUIThreadDeferred([this, defaults, resume] {

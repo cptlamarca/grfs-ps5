@@ -5,7 +5,7 @@ Sony Interactive Entertainment or Microsoft. Tom Clancy's Ghost Recon: Future
 Soldier is by Ubisoft; all rights to the game belong to Ubisoft. No game files
 are distributed: playing needs your own original copy. The PS5 home screen's
 icon, background and launch screen (assets/ps5/icon0.png, pic0.dds, pic1.dds)
-are made from the game's promotional art, © Ubisoft, used as fan art.
+and the ISO screen's wallpaper (assets/iso_background.png) are made from the game's promotional art, © Ubisoft, used as fan art.
 
 ## Recompilation
 

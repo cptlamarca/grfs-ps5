@@ -6,12 +6,14 @@
 #include <algorithm>
 #include <cctype>
 #include <cstdio>
+#include <cmath>
 #include <cstring>
 
 #include <imgui.h>
 
 #include <rex/filesystem.h>
 #include <rex/logging.h>
+#include <rex/ui/image_decode.h>
 
 #include "achievements_ui.h"
 #include "third_party/qrcodegen/qrcodegen.hpp"
@@ -40,12 +42,17 @@ constexpr uint32_t kPadUp = 0x10, kPadDown = 0x40;
 constexpr uint32_t kPadCircle = 0x2000, kPadCross = 0x4000, kPadSquare = 0x8000;
 
 constexpr float kFontScaleAt1080 = 0.5f;
-constexpr ImU32 kBackgroundTop = IM_COL32(16, 30, 54, 255);
-constexpr ImU32 kBackgroundBottom = IM_COL32(4, 8, 16, 255);
 constexpr ImVec4 kText = ImVec4(1.0f, 1.0f, 1.0f, 1.0f);
-constexpr ImVec4 kDimText = ImVec4(0.70f, 0.73f, 0.78f, 1.0f);
-constexpr ImVec4 kAccent = ImVec4(0.45f, 0.75f, 1.0f, 1.0f);
-constexpr ImVec4 kError = ImVec4(1.0f, 0.45f, 0.40f, 1.0f);
+constexpr ImVec4 kDimText = ImVec4(0.74f, 0.80f, 0.84f, 1.0f);
+constexpr ImVec4 kAccent = ImVec4(0.40f, 0.80f, 1.0f, 1.0f);
+constexpr ImVec4 kError = ImVec4(1.0f, 0.62f, 0.58f, 1.0f);
+
+ImVec4 WithAlpha(ImVec4 color, float alpha) {
+  color.w *= alpha;
+  return color;
+}
+
+float EaseOut(float x) { return 1.0f - (1.0f - x) * (1.0f - x) * (1.0f - x); }
 
 // The folder as the console's storage has it: the app's own is mounted at
 // /app0, from /data/homebrew/<title ID> (where FTP shows it) or a USB
@@ -147,20 +154,20 @@ void DrawHints(ImDrawList* draw, float x, float y, float scale,
   }
 }
 
-void DrawQr(ImDrawList* draw, ImVec2 at, float size, float scale, const char* text) {
+void DrawQr(ImDrawList* draw, ImVec2 at, float size, float scale, const char* text, float alpha) {
   try {
     qrcodegen::QrCode qr = qrcodegen::QrCode::encodeText(text, qrcodegen::QrCode::Ecc::MEDIUM);
     // A white card with a quiet zone of 3 modules.
     const int modules = qr.getSize();
     const float module = size / float(modules + 6);
-    draw->AddRectFilled(at, ImVec2(at.x + size, at.y + size), IM_COL32(255, 255, 255, 255),
-                        12.0f * scale);
+    draw->AddRectFilled(at, ImVec2(at.x + size, at.y + size),
+                        IM_COL32(255, 255, 255, int(255 * alpha)), 10.0f * scale);
     for (int y = 0; y < modules; ++y) {
       for (int x = 0; x < modules; ++x) {
         if (qr.getModule(x, y)) {
           ImVec2 corner(at.x + (x + 3) * module, at.y + (y + 3) * module);
           draw->AddRectFilled(corner, ImVec2(corner.x + module + 0.5f, corner.y + module + 0.5f),
-                              IM_COL32(0, 0, 0, 255));
+                              IM_COL32(0, 0, 0, int(255 * alpha)));
         }
       }
     }
@@ -170,12 +177,27 @@ void DrawQr(ImDrawList* draw, ImVec2 at, float size, float scale, const char* te
 
 }  // namespace
 
+// The wallpaper, built into the app (see CMakeLists.txt).
+__asm__(".section .rodata\n"
+        ".balign 16\n"
+        ".hidden grfs_iso_background\n"
+        ".globl grfs_iso_background\n"
+        "grfs_iso_background:\n"
+        ".incbin \"" GRFS_ISO_BACKGROUND "\"\n"
+        ".hidden grfs_iso_background_end\n"
+        ".globl grfs_iso_background_end\n"
+        "grfs_iso_background_end:\n"
+        ".previous\n");
+extern "C" const uint8_t grfs_iso_background[];
+extern "C" const uint8_t grfs_iso_background_end[];
+
 bool IsoScreen::HasGameFiles(const std::filesystem::path& folder) {
   std::error_code ec;
   return std::filesystem::exists(folder / kGameFile, ec);
 }
 
-IsoScreen::IsoScreen(rex::ui::ImGuiDrawer* imgui_drawer, ImFont* font, ImFont* title_font,
+IsoScreen::IsoScreen(rex::ui::ImGuiDrawer* imgui_drawer,
+                     rex::ui::ImmediateDrawer* immediate_drawer, ImFont* font, ImFont* title_font,
                      std::filesystem::path game_folder, std::function<void()> done)
     : ImGuiDialog(imgui_drawer),
       font_(font),
@@ -186,6 +208,15 @@ IsoScreen::IsoScreen(rex::ui::ImGuiDrawer* imgui_drawer, ImFont* font, ImFont* t
   sceUserServiceInitialize(nullptr);
   scePadInit();
 #endif
+  int width = 0, height = 0;
+  std::vector<uint8_t> pixels = rex::ui::DecodeImageRGBA(
+      grfs_iso_background, size_t(grfs_iso_background_end - grfs_iso_background), width, height);
+  if (immediate_drawer && !pixels.empty()) {
+    background_ = immediate_drawer->CreateTexture(uint32_t(width), uint32_t(height),
+                                                  rex::ui::ImmediateTextureFilter::kLinear, false,
+                                                  pixels.data());
+    background_aspect_ = float(width) / float(height);
+  }
   Search();
 }
 
@@ -365,171 +396,362 @@ void IsoScreen::OnDraw(ImGuiIO& io) {
   const ImVec2 display = io.DisplaySize;
   const float scale = display.y / 1080.0f;
   const float font_scale = scale * kFontScaleAt1080;
+  const double now = ImGui::GetTime();
+  const float dt = std::clamp(io.DeltaTime, 0.0f, 0.1f);
+  if (shown_at_ < 0.0) {
+    shown_at_ = now;
+  }
+  if (state != drawn_state_) {
+    drawn_state_ = state;
+    state_at_ = now;
+  }
+  const float t = float(now - shown_at_);
+  const float appear = EaseOut(std::clamp(t / 0.8f, 0.0f, 1.0f));
+  const float state_appear = EaseOut(std::clamp(float(now - state_at_) / 0.45f, 0.0f, 1.0f));
+
   ImGui::SetNextWindowPos(ImVec2(0, 0), ImGuiCond_Always);
   ImGui::SetNextWindowSize(display, ImGuiCond_Always);
   ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
   ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
-  ImGui::PushStyleColor(ImGuiCol_WindowBg, IM_COL32(0, 0, 0, 0));
+  ImGui::PushStyleColor(ImGuiCol_WindowBg, IM_COL32(0, 0, 0, 255));
   constexpr ImGuiWindowFlags kFlags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
                                       ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoNav |
                                       ImGuiWindowFlags_NoInputs |
                                       ImGuiWindowFlags_NoBringToFrontOnFocus;
   if (ImGui::Begin("##grfs_iso", nullptr, kFlags)) {
     ImDrawList* draw = ImGui::GetWindowDrawList();
-    draw->AddRectFilledMultiColor(ImVec2(0, 0), display, kBackgroundTop, kBackgroundTop,
-                                  kBackgroundBottom, kBackgroundBottom);
+
+    // The wallpaper, covering the screen, in a slow drift and zoom about
+    // the skull.
+    ImVec2 uv0(0, 0), uv1(1, 1);
+    {
+      const float screen_aspect = display.x / std::max(display.y, 1.0f);
+      float width = 1.0f, height = 1.0f;
+      if (screen_aspect > background_aspect_) {
+        height = background_aspect_ / screen_aspect;
+      } else {
+        width = screen_aspect / background_aspect_;
+      }
+      const float zoom = 1.06f + 0.04f * std::sin(t * 0.11f);
+      width /= zoom;
+      height /= zoom;
+      const float cx = std::clamp(0.60f + 0.015f * std::sin(t * 0.07f), width / 2, 1 - width / 2);
+      const float cy = std::clamp(0.50f + 0.012f * std::cos(t * 0.09f), height / 2, 1 - height / 2);
+      uv0 = ImVec2(cx - width / 2, cy - height / 2);
+      uv1 = ImVec2(cx + width / 2, cy + height / 2);
+    }
+    auto to_screen = [&](float u, float v) {
+      return ImVec2((u - uv0.x) / (uv1.x - uv0.x) * display.x,
+                    (v - uv0.y) / (uv1.y - uv0.y) * display.y);
+    };
+    if (background_) {
+      draw->AddImage(reinterpret_cast<ImTextureID>(background_.get()), ImVec2(0, 0), display, uv0,
+                     uv1);
+    } else {
+      draw->AddRectFilledMultiColor(ImVec2(0, 0), display, IM_COL32(16, 30, 40, 255),
+                                    IM_COL32(16, 30, 40, 255), IM_COL32(4, 8, 12, 255),
+                                    IM_COL32(4, 8, 12, 255));
+    }
+    // The skull's crack glows, pulsing.
+    {
+      const ImVec2 crack = to_screen(0.77f, 0.24f);
+      const float pulse = 0.5f + 0.5f * std::sin(t * 1.8f);
+      for (int i = 6; i >= 1; --i) {
+        const float radius = (40.0f + i * 34.0f) * scale * (0.9f + 0.15f * pulse);
+        draw->AddCircleFilled(crack, radius, IM_COL32(70, 190, 255, int(5 + 5 * pulse)), 48);
+      }
+    }
+    // Shade under the text: dark on the left, clear over the skull.
+    const ImU32 shade = IM_COL32(2, 8, 12, 235), clear = IM_COL32(2, 8, 12, 0);
+    draw->AddRectFilled(ImVec2(0, 0), ImVec2(display.x * 0.38f, display.y), shade);
+    draw->AddRectFilledMultiColor(ImVec2(display.x * 0.38f, 0), ImVec2(display.x * 0.72f, display.y),
+                                  shade, clear, clear, shade);
+    draw->AddRectFilledMultiColor(ImVec2(0, display.y * 0.80f), display, clear, clear,
+                                  IM_COL32(0, 0, 0, 200), IM_COL32(0, 0, 0, 200));
+    // A tactical scan line sweeping down, every 7 seconds.
+    {
+      const float y = std::fmod(t / 7.0f, 1.0f) * display.y * 1.2f - display.y * 0.1f;
+      const float trail = 90.0f * scale;
+      draw->AddRectFilledMultiColor(ImVec2(0, y - trail), ImVec2(display.x, y),
+                                    IM_COL32(80, 200, 255, 0), IM_COL32(80, 200, 255, 0),
+                                    IM_COL32(80, 200, 255, 18), IM_COL32(80, 200, 255, 18));
+      draw->AddRectFilled(ImVec2(0, y), ImVec2(display.x, y + 2.0f * scale),
+                          IM_COL32(120, 215, 255, 50));
+    }
+
     if (font_) {
       ImGui::PushFont(font_);
     }
-    const float left = display.x * 0.08f;
-    const float qr_size = display.y * 0.26f;
-    const float qr_x = display.x * 0.92f - qr_size;
-    const float right = qr_x - 70.0f * scale;
-    const float top = display.y * 0.09f;
+    const float left = display.x * 0.07f;
+    const float right = display.x * 0.58f;
+    const float top = display.y * 0.10f;
+    const float slide = (1.0f - appear) * -80.0f * scale;
 
-    // The title.
+    // HUD corner brackets about the panel, drawn out as it appears.
+    {
+      const ImVec2 a(left - 40.0f * scale, top - 40.0f * scale);
+      const ImVec2 b(right + 40.0f * scale, display.y - 60.0f * scale);
+      const float arm = 46.0f * scale * appear, thickness = 3.0f * scale;
+      const ImU32 color = IM_COL32(90, 200, 255, int(200 * appear));
+      for (int corner = 0; corner < 4; ++corner) {
+        const float x = corner & 1 ? b.x : a.x, y = corner & 2 ? b.y : a.y;
+        const float dx = corner & 1 ? -arm : arm, dy = corner & 2 ? -arm : arm;
+        draw->AddLine(ImVec2(x, y), ImVec2(x + dx, y), color, thickness);
+        draw->AddLine(ImVec2(x, y), ImVec2(x, y + dy), color, thickness);
+      }
+    }
+
+    // The kicker and the title, sliding in.
+    const bool extracting = state == State::kExtracting || state == State::kDone;
+    ImGui::SetWindowFontScale(font_scale * 0.6f);
+    ImGui::SetCursorPos(ImVec2(left + slide, top));
+    ImGui::TextColored(WithAlpha(kAccent, appear), "%s", "GHOST RECON: FUTURE SOLDIER  //  PS5");
     if (title_font_) {
       ImGui::PushFont(title_font_);
     }
-    ImGui::SetWindowFontScale(font_scale * 0.85f);
-    ImGui::SetCursorPos(ImVec2(left, top));
-    ImGui::TextColored(kText, "%s",
-                       state == State::kExtracting || state == State::kDone
-                           ? (portuguese ? "Extraindo os arquivos do jogo" : "Extracting the game files")
-                           : (portuguese ? "Arquivos do jogo ausentes" : "Game files missing"));
+    ImGui::SetWindowFontScale(font_scale * 0.95f);
+    ImGui::SetCursorPos(ImVec2(left + slide * 1.6f, ImGui::GetCursorPosY() + 4.0f * scale));
+    ImGui::TextColored(WithAlpha(kText, appear), "%s",
+                       extracting ? (portuguese ? "Extraindo os arquivos" : "Extracting the files")
+                                  : (portuguese ? "Arquivos do jogo ausentes"
+                                                : "Game files missing"));
     if (title_font_) {
       ImGui::PopFont();
     }
+    {
+      // An accent rule under the title, growing.
+      const float y = ImGui::GetCursorPosY() + 6.0f * scale;
+      draw->AddRectFilled(ImVec2(left, y), ImVec2(left + 140.0f * scale * appear, y + 4.0f * scale),
+                          IM_COL32(90, 200, 255, 255));
+      ImGui::SetCursorPosY(y + 34.0f * scale);
+    }
 
-    // Discord, right.
-    DrawQr(draw, ImVec2(qr_x, top), qr_size, scale, kDiscordUrl);
-    ImGui::SetWindowFontScale(font_scale * 0.75f);
-    ImGui::SetCursorPos(ImVec2(qr_x, top + qr_size + 20.0f * scale));
-    ImGui::PushTextWrapPos(qr_x + qr_size);
-    ImGui::TextColored(kDimText, "%s",
-                       portuguese ? "Dúvidas ou problemas? Entre no Discord:"
-                                  : "Questions or problems? Join the Discord:");
-    ImGui::SetCursorPosX(qr_x);
-    ImGui::TextColored(kAccent, "%s", kDiscordLink);
-    ImGui::PopTextWrapPos();
-
-    ImGui::SetWindowFontScale(font_scale * 0.8f);
-    ImGui::SetCursorPos(ImVec2(left, top + 120.0f * scale));
-    ImGui::PushTextWrapPos(right);
     const std::string app = StorageFolder(rex::filesystem::GetExecutableFolder()).string();
     const std::string game_folder = StorageFolder(game_folder_).string();
+    const float body_alpha = EaseOut(std::clamp((t - 0.25f) / 0.6f, 0.0f, 1.0f));
+    ImGui::SetWindowFontScale(font_scale * 0.72f);
+    ImGui::PushTextWrapPos(right);
+
+    // The Discord card, bottom left; the list stops above it.
+    const float qr_size = 150.0f * scale;
+    const float card_top = display.y - 110.0f * scale - qr_size - 30.0f * scale;
+    const float hint_y = display.y - 100.0f * scale;
+
     if (state == State::kChoosing || state == State::kFailed) {
       ImGui::SetCursorPosX(left);
-      ImGui::TextColored(kDimText, "%s",
-                         portuguese ? "Os arquivos extraídos da ISO do Ghost Recon: Future Soldier "
-                                      "(Xbox 360) não foram encontrados. Eles devem ficar nesta "
-                                      "pasta, com o default.xex dentro:"
-                                    : "The files extracted from Ghost Recon: Future Soldier's "
-                                      "(Xbox 360) ISO weren't found. They go in this folder, with "
-                                      "default.xex inside:");
+      ImGui::TextColored(WithAlpha(kDimText, body_alpha), "%s",
+                         portuguese ? "Os arquivos extraídos da ISO do jogo (Xbox 360) não foram "
+                                      "encontrados. Eles ficam nesta pasta, com o default.xex dentro:"
+                                    : "The files extracted from the game's (Xbox 360) ISO weren't "
+                                      "found. They go in this folder, with default.xex inside:");
+      // The folder, on a dark tag.
+      {
+        const ImVec2 at(left, ImGui::GetCursorPosY() + 8.0f * scale);
+        const ImVec2 size = ImGui::CalcTextSize(game_folder.c_str());
+        draw->AddRectFilled(ImVec2(at.x - 2.0f * scale, at.y),
+                            ImVec2(at.x + size.x + 28.0f * scale, at.y + size.y + 16.0f * scale),
+                            IM_COL32(10, 40, 60, int(220 * body_alpha)), 6.0f * scale);
+        draw->AddRectFilled(ImVec2(at.x - 2.0f * scale, at.y),
+                            ImVec2(at.x + 4.0f * scale, at.y + size.y + 16.0f * scale),
+                            IM_COL32(90, 200, 255, int(255 * body_alpha)));
+        ImGui::SetCursorPos(ImVec2(at.x + 16.0f * scale, at.y + 8.0f * scale));
+        ImGui::TextColored(WithAlpha(kAccent, body_alpha), "%s", game_folder.c_str());
+        ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 26.0f * scale);
+      }
       ImGui::SetCursorPosX(left);
-      ImGui::TextColored(kAccent, "%s", game_folder.c_str());
-      ImGui::SetCursorPos(ImVec2(left, ImGui::GetCursorPosY() + 24.0f * scale));
-      ImGui::TextColored(
-          kDimText, "%s",
-          (portuguese ? "Ou coloque o arquivo .iso do jogo na pasta " + app +
-                            " ou na raiz de um pendrive ou HD externo, escolha-o abaixo e "
-                            "pressione X: os arquivos serão extraídos e o jogo vai iniciar."
-                      : "Or put the game's .iso file in " + app +
-                            " or at the root of a USB drive, choose it below and press X: its "
-                            "files will be extracted and the game will start.")
-              .c_str());
+      ImGui::TextColored(WithAlpha(kDimText, body_alpha), "%s",
+                         (portuguese ? "Ou coloque o .iso do jogo em " + app +
+                                           " ou na raiz de um pendrive ou HD externo, escolha-o "
+                                           "abaixo e aperte X: os arquivos são extraídos e o "
+                                           "jogo inicia."
+                                     : "Or put the game's .iso in " + app +
+                                           " or at the root of a USB drive, choose it below and "
+                                           "press X: its files are extracted and the game starts.")
+                             .c_str());
     }
     ImGui::PopTextWrapPos();
 
-    const float list_top = ImGui::GetCursorPosY() + 40.0f * scale;
-    const float row_height = 64.0f * scale;
+    const float list_top = ImGui::GetCursorPosY() + 34.0f * scale;
     if (state == State::kChoosing) {
+      const float list_alpha = EaseOut(std::clamp((t - 0.45f) / 0.6f, 0.0f, 1.0f));
+      ImGui::SetWindowFontScale(font_scale * 0.6f);
       ImGui::SetCursorPos(ImVec2(left, list_top));
-      ImGui::TextColored(kText, "%s", portuguese ? "ISOs encontradas" : "ISOs found");
-      float y = ImGui::GetCursorPosY() + 10.0f * scale;
+      ImGui::TextColored(WithAlpha(kAccent, list_alpha), "%s",
+                         portuguese ? "ISOS ENCONTRADAS" : "ISOS FOUND");
+      ImGui::SetWindowFontScale(font_scale * 0.72f);
+      const float rows_top = ImGui::GetCursorPosY() + 10.0f * scale;
+      const float row_height = 70.0f * scale;
       if (images_.empty()) {
-        ImGui::SetCursorPos(ImVec2(left, y));
+        ImGui::SetCursorPos(ImVec2(left, rows_top));
         ImGui::PushTextWrapPos(right);
-        ImGui::TextColored(kDimText, "%s",
-                           portuguese ? "Nenhuma ISO encontrada. Coloque uma e pressione Quadrado "
+        ImGui::TextColored(WithAlpha(kDimText, list_alpha * (0.65f + 0.35f * std::sin(t * 2.5f))),
+                           "%s",
+                           portuguese ? "Nenhuma ISO encontrada. Coloque uma e aperte Quadrado "
                                         "para procurar de novo."
                                       : "No ISO found. Put one there and press Square to search "
                                         "again.");
         ImGui::PopTextWrapPos();
       }
-      // Up to 6 rows, scrolled to keep the selected one in.
-      const int rows = 6;
-      const int first = std::clamp(selected_ - rows + 1, 0, std::max(int(images_.size()) - rows, 0));
-      for (int i = first; i < int(images_.size()) && i < first + rows; ++i) {
-        const ImVec2 a(left, y), b(right, y + row_height - 8.0f * scale);
-        const bool chosen = i == selected_;
-        draw->AddRectFilled(a, b, chosen ? IM_COL32(60, 110, 180, 200) : IM_COL32(255, 255, 255, 18),
-                            8.0f * scale);
-        ImGui::SetCursorPos(ImVec2(left + 20.0f * scale, y + 10.0f * scale));
-        ImGui::TextColored(kText, "%s", images_[i].path.filename().string().c_str());
-        const std::string detail =
-            images_[i].path.parent_path().string() + "   " + Gigabytes(images_[i].size);
-        const float detail_width = ImGui::CalcTextSize(detail.c_str()).x;
-        ImGui::SetCursorPos(ImVec2(std::max(right - 20.0f * scale - detail_width,
-                                            left + display.x * 0.25f),
-                                   y + 10.0f * scale));
-        ImGui::TextColored(chosen ? kText : kDimText, "%s", detail.c_str());
-        y += row_height;
+      const int rows = std::max(1, int((card_top - rows_top - 20.0f * scale) / row_height));
+      const int first =
+          std::clamp(selected_ - rows + 1, 0, std::max(int(images_.size()) - rows, 0));
+      // The highlight slides to the selected row.
+      highlight_row_ += (float(selected_ - first) - highlight_row_) * std::min(1.0f, dt * 14.0f);
+      if (!images_.empty()) {
+        const float y = rows_top + highlight_row_ * row_height;
+        const float pulse = 0.5f + 0.5f * std::sin(t * 3.0f);
+        draw->AddRectFilledMultiColor(ImVec2(left, y), ImVec2(right, y + row_height - 10.0f * scale),
+                                      IM_COL32(40, 140, 210, int(200 * list_alpha)),
+                                      IM_COL32(40, 140, 210, int(40 * list_alpha)),
+                                      IM_COL32(40, 140, 210, int(40 * list_alpha)),
+                                      IM_COL32(40, 140, 210, int(200 * list_alpha)));
+        draw->AddRect(ImVec2(left, y), ImVec2(right, y + row_height - 10.0f * scale),
+                      IM_COL32(110, 210, 255, int((90 + 110 * pulse) * list_alpha)), 4.0f * scale,
+                      0, 2.0f * scale);
+        draw->AddRectFilled(ImVec2(left, y), ImVec2(left + 6.0f * scale, y + row_height - 10.0f * scale),
+                            IM_COL32(120, 220, 255, int(255 * list_alpha)));
       }
-    } else if (state == State::kExtracting || state == State::kDone) {
+      for (int i = first; i < int(images_.size()) && i < first + rows; ++i) {
+        const float y = rows_top + (i - first) * row_height;
+        const float row_alpha =
+            list_alpha * EaseOut(std::clamp((t - 0.55f - 0.08f * (i - first)) / 0.4f, 0.0f, 1.0f));
+        const bool chosen = i == selected_;
+        if (!chosen) {
+          draw->AddRectFilled(ImVec2(left, y), ImVec2(right, y + row_height - 10.0f * scale),
+                              IM_COL32(255, 255, 255, int(14 * row_alpha)), 4.0f * scale);
+        }
+        const float text_y = y + (row_height - 10.0f * scale - ImGui::GetTextLineHeight()) / 2;
+        ImGui::SetCursorPos(ImVec2(left + 26.0f * scale + (1.0f - row_alpha) * 30.0f * scale, text_y));
+        ImGui::TextColored(WithAlpha(kText, row_alpha), "%s",
+                           images_[i].path.filename().string().c_str());
+        const std::string detail =
+            StorageFolder(images_[i].path.parent_path()).string() + "   " + Gigabytes(images_[i].size);
+        const float detail_width = ImGui::CalcTextSize(detail.c_str()).x;
+        ImGui::SetCursorPos(ImVec2(right - 22.0f * scale - detail_width, text_y));
+        ImGui::TextColored(WithAlpha(chosen ? kText : kDimText, row_alpha), "%s", detail.c_str());
+      }
+    } else if (extracting) {
       const uint64_t total = total_, done = std::min<uint64_t>(progress_.done, total);
-      const float fraction = total ? float(double(done) / double(total)) : 0.0f;
+      const float fraction = state == State::kDone ? 1.0f
+                             : total ? float(double(done) / double(total))
+                                     : 0.0f;
+      shown_progress_ += (fraction - shown_progress_) * std::min(1.0f, dt * 5.0f);
       std::string file;
       {
         std::lock_guard<std::mutex> lock(mutex_);
         file = current_file_;
       }
-      ImGui::SetCursorPos(ImVec2(left, top + 140.0f * scale));
+      ImGui::SetWindowFontScale(font_scale * 0.72f);
+      ImGui::SetCursorPos(ImVec2(left, ImGui::GetCursorPosY()));
       ImGui::PushTextWrapPos(right);
-      ImGui::TextColored(kDimText, "%s",
+      ImGui::TextColored(WithAlpha(kDimText, state_appear), "%s",
                          ((portuguese ? "Para a pasta " : "Into ") + game_folder).c_str());
-      ImGui::TextColored(kDimText, "%s",
+      ImGui::SetCursorPosX(left);
+      ImGui::TextColored(WithAlpha(kDimText, state_appear), "%s",
                          portuguese ? "Não feche o jogo nem desligue o console. O jogo inicia "
                                       "quando terminar."
                                     : "Don't close the game or turn the console off. The game "
                                       "starts when it's done.");
       ImGui::PopTextWrapPos();
-      const float bar_y = ImGui::GetCursorPosY() + 50.0f * scale;
-      const float bar_height = 36.0f * scale;
-      draw->AddRectFilled(ImVec2(left, bar_y), ImVec2(right, bar_y + bar_height),
-                          IM_COL32(255, 255, 255, 30), bar_height / 2);
-      if (fraction > 0.0f) {
-        draw->AddRectFilled(ImVec2(left, bar_y),
-                            ImVec2(left + (right - left) * fraction, bar_y + bar_height),
-                            IM_COL32(90, 160, 240, 255), bar_height / 2);
+
+      // The percentage, large, with a spinner.
+      const float big_y = ImGui::GetCursorPosY() + 40.0f * scale;
+      char percent[16];
+      std::snprintf(percent, sizeof(percent), "%d%%", int(shown_progress_ * 100.0f + 0.5f));
+      if (title_font_) {
+        ImGui::PushFont(title_font_);
       }
-      char line[96];
-      std::snprintf(line, sizeof(line), "%d%%   %s / %s", int(fraction * 100.0f),
-                    Gigabytes(done).c_str(), Gigabytes(total).c_str());
-      ImGui::SetCursorPos(ImVec2(left, bar_y + bar_height + 20.0f * scale));
-      ImGui::TextColored(kText, "%s", line);
+      ImGui::SetWindowFontScale(font_scale * 1.3f);
+      ImGui::SetCursorPos(ImVec2(left, big_y));
+      ImGui::TextColored(WithAlpha(kText, state_appear), "%s", percent);
+      const float big_height = ImGui::GetTextLineHeight();
+      if (title_font_) {
+        ImGui::PopFont();
+      }
+      {
+        const ImVec2 c(right - 34.0f * scale, big_y + big_height / 2);
+        const float r = 26.0f * scale, a = float(now * 5.0);
+        draw->PathArcTo(c, r, a, a + 4.2f, 32);
+        draw->PathStroke(IM_COL32(90, 200, 255, int(255 * state_appear)), 0, 5.0f * scale);
+        draw->AddCircle(c, r, IM_COL32(90, 200, 255, int(50 * state_appear)), 32, 5.0f * scale);
+      }
+
+      // The bar: moving stripes in its fill, and a shine running along.
+      const float bar_y = big_y + big_height + 20.0f * scale;
+      const float bar_height = 22.0f * scale;
+      const ImVec2 bar_a(left, bar_y), bar_b(right, bar_y + bar_height);
+      draw->AddRectFilled(bar_a, bar_b, IM_COL32(255, 255, 255, 28), bar_height / 2);
+      const float fill_x = left + (right - left) * std::clamp(shown_progress_, 0.0f, 1.0f);
+      if (fill_x > left + 1.0f) {
+        draw->AddRectFilledMultiColor(bar_a, ImVec2(fill_x, bar_b.y), IM_COL32(30, 120, 200, 255),
+                                      IM_COL32(90, 210, 255, 255), IM_COL32(90, 210, 255, 255),
+                                      IM_COL32(30, 120, 200, 255));
+        draw->PushClipRect(bar_a, ImVec2(fill_x, bar_b.y), true);
+        const float stripe = 26.0f * scale, offset = std::fmod(float(now) * 50.0f * scale, stripe * 2);
+        for (float x = left - bar_height - stripe * 2 + offset; x < fill_x; x += stripe * 2) {
+          draw->AddQuadFilled(ImVec2(x, bar_b.y), ImVec2(x + stripe, bar_b.y),
+                              ImVec2(x + stripe + bar_height, bar_a.y), ImVec2(x + bar_height, bar_a.y),
+                              IM_COL32(255, 255, 255, 30));
+        }
+        const float shine = left + std::fmod(float(now) * 0.6f, 1.4f) * (right - left) - 120.0f * scale;
+        draw->AddRectFilledMultiColor(ImVec2(shine, bar_a.y), ImVec2(shine + 60.0f * scale, bar_b.y),
+                                      IM_COL32(255, 255, 255, 0), IM_COL32(255, 255, 255, 90),
+                                      IM_COL32(255, 255, 255, 90), IM_COL32(255, 255, 255, 0));
+        draw->AddRectFilledMultiColor(ImVec2(shine + 60.0f * scale, bar_a.y),
+                                      ImVec2(shine + 120.0f * scale, bar_b.y),
+                                      IM_COL32(255, 255, 255, 90), IM_COL32(255, 255, 255, 0),
+                                      IM_COL32(255, 255, 255, 0), IM_COL32(255, 255, 255, 90));
+        draw->PopClipRect();
+      }
+      ImGui::SetWindowFontScale(font_scale * 0.65f);
+      ImGui::SetCursorPos(ImVec2(left, bar_b.y + 18.0f * scale));
+      ImGui::TextColored(WithAlpha(kText, state_appear), "%s / %s", Gigabytes(done).c_str(),
+                         Gigabytes(total).c_str());
       ImGui::SetCursorPosX(left);
       ImGui::PushTextWrapPos(right);
-      ImGui::TextColored(kDimText, "%s", file.c_str());
+      ImGui::TextColored(WithAlpha(kDimText, state_appear), "%s", file.c_str());
       ImGui::PopTextWrapPos();
-    } else if (state == State::kFailed) {
+    }
+    if (state == State::kFailed) {
       std::string error;
       {
         std::lock_guard<std::mutex> lock(mutex_);
         error = error_;
       }
-      ImGui::SetCursorPos(ImVec2(left, list_top));
-      ImGui::PushTextWrapPos(right);
-      ImGui::TextColored(kError, "%s",
-                         ((portuguese ? "Não foi possível extrair a ISO: " : "Couldn't extract the ISO: ") +
-                          error)
-                             .c_str());
+      // A red panel, shaking in.
+      const float shake = (1.0f - state_appear) * std::sin(float(now - state_at_) * 60.0f) * 14.0f * scale;
+      ImGui::SetWindowFontScale(font_scale * 0.72f);
+      const std::string message =
+          (portuguese ? "Não foi possível extrair a ISO: " : "Couldn't extract the ISO: ") + error;
+      const ImVec2 size = ImGui::CalcTextSize(message.c_str(), nullptr, false, right - left - 50.0f * scale);
+      const ImVec2 a(left + shake, list_top), b(right + shake, list_top + size.y + 40.0f * scale);
+      draw->AddRectFilled(a, b, IM_COL32(90, 20, 20, int(220 * state_appear)), 6.0f * scale);
+      draw->AddRectFilled(a, ImVec2(a.x + 6.0f * scale, b.y), IM_COL32(255, 90, 80, int(255 * state_appear)));
+      ImGui::SetCursorPos(ImVec2(a.x + 28.0f * scale, a.y + 20.0f * scale));
+      ImGui::PushTextWrapPos(right + shake - 22.0f * scale);
+      ImGui::TextColored(WithAlpha(kError, state_appear), "%s", message.c_str());
       ImGui::PopTextWrapPos();
     }
 
-    ImGui::SetWindowFontScale(font_scale * 0.8f);
-    const float hint_y = display.y - 90.0f * scale;
+    // Discord, bottom left.
+    {
+      const float card_alpha = EaseOut(std::clamp((t - 0.7f) / 0.6f, 0.0f, 1.0f));
+      const ImVec2 at(left + (1.0f - card_alpha) * -40.0f * scale, card_top);
+      DrawQr(draw, at, qr_size, scale, kDiscordUrl, card_alpha);
+      ImGui::SetWindowFontScale(font_scale * 0.6f);
+      ImGui::SetCursorPos(ImVec2(at.x + qr_size + 28.0f * scale, at.y + 18.0f * scale));
+      ImGui::TextColored(WithAlpha(kAccent, card_alpha), "%s", "DISCORD");
+      ImGui::SetWindowFontScale(font_scale * 0.7f);
+      ImGui::SetCursorPosX(at.x + qr_size + 28.0f * scale);
+      ImGui::TextColored(WithAlpha(kDimText, card_alpha), "%s",
+                         portuguese ? "Dúvidas ou problemas? Fale com a gente:"
+                                    : "Questions or problems? Talk to us:");
+      ImGui::SetCursorPosX(at.x + qr_size + 28.0f * scale);
+      ImGui::TextColored(WithAlpha(kText, card_alpha), "%s", kDiscordLink);
+    }
+
+    // The buttons.
+    ImGui::SetWindowFontScale(font_scale * 0.75f);
     if (state == State::kChoosing) {
       std::vector<std::pair<Glyph, std::string>> hints;
       if (!images_.empty()) {
@@ -544,6 +766,12 @@ void IsoScreen::OnDraw(ImGuiIO& io) {
     }
     if (font_) {
       ImGui::PopFont();
+    }
+
+    // Fading in from black.
+    if (appear < 1.0f) {
+      ImGui::GetForegroundDrawList()->AddRectFilled(ImVec2(0, 0), display,
+                                                    IM_COL32(0, 0, 0, int(255 * (1.0f - appear))));
     }
   }
   ImGui::End();

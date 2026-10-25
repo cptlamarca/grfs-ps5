@@ -13,6 +13,7 @@
 #include <vector>
 
 #include <rex/ui/imgui_dialog.h>
+#include <rex/ui/immediate_drawer.h>
 
 #include "disc_image.h"
 
@@ -22,8 +23,9 @@ class IsoScreen : public rex::ui::ImGuiDialog {
  public:
   // `game_folder` gets the files; `done` runs (on the UI thread, from a draw)
   // once they're there.
-  IsoScreen(rex::ui::ImGuiDrawer* imgui_drawer, ImFont* font, ImFont* title_font,
-            std::filesystem::path game_folder, std::function<void()> done);
+  IsoScreen(rex::ui::ImGuiDrawer* imgui_drawer, rex::ui::ImmediateDrawer* immediate_drawer,
+            ImFont* font, ImFont* title_font, std::filesystem::path game_folder,
+            std::function<void()> done);
   ~IsoScreen() override;
 
   // Whether `folder` has the game's files.
@@ -43,6 +45,9 @@ class IsoScreen : public rex::ui::ImGuiDialog {
   void Extract(const Image& image);
   uint32_t PollPad();
 
+  // The wallpaper: the game's skull (assets/iso_background.png, in the app).
+  std::unique_ptr<rex::ui::ImmediateTexture> background_;
+  float background_aspect_ = 1.6f;
   ImFont* font_;
   ImFont* title_font_;
   std::filesystem::path game_folder_;
@@ -61,4 +66,11 @@ class IsoScreen : public rex::ui::ImGuiDialog {
   int32_t pad_ = -1;
   uint32_t previous_buttons_ = 0;
   bool done_called_ = false;
+
+  // Animations: time since shown, since the state last changed, the list's
+  // highlight (sliding to the selected row) and the progress bar.
+  double shown_at_ = -1.0, state_at_ = 0.0;
+  State drawn_state_ = State::kChoosing;
+  float highlight_row_ = 0.0f;
+  float shown_progress_ = 0.0f;
 };
