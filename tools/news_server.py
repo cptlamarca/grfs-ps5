@@ -30,12 +30,17 @@ by tools/system_link_relay.py next to players.json).
 With --admin-local the page and its /api/ only answer the local machine: a
 TLS proxy in front of it (Caddy, giving it its https:// address), so the
 password never goes over plain HTTP.
+
+The page logs in with a form (a session cookie of 90 days, signed with the
+password: changing it logs everyone out) and installs as a phone app (a PWA:
+manifest, service worker and the icons of admin_app/ next to this script).
 """
 
 import argparse
 import base64
 import re
 import datetime
+import hashlib
 import hmac
 import http.server
 import json
@@ -116,6 +121,71 @@ def merge_shaders(old, new, name):
     return old[:header] + b"".join(kept + added)
 
 
+LOGIN = """<!doctype html>
+<html lang="pt-br"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GRFS Admin</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<meta name="theme-color" content="#10161c">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="GRFS Admin">
+<style>
+body { margin:0; min-height:100vh; display:grid; place-items:center; background:#10161c; color:#e6edf3;
+       font:16px system-ui,sans-serif; }
+form { width:min(320px, calc(100vw - 32px)); display:grid; gap:12px; text-align:center; }
+img { width:96px; height:96px; margin:0 auto 8px; border-radius:22px; }
+h1 { font-size:20px; letter-spacing:.04em; margin:0 0 8px; }
+input { background:#1a232c; color:inherit; border:1px solid #2c3a47; border-radius:8px;
+        padding:12px; font:inherit; font-size:16px; }
+button { background:#5fb3e6; color:#06121b; border:0; border-radius:8px; padding:12px;
+         font:inherit; font-weight:600; }
+#error { color:#e5534b; min-height:1.4em; margin:0; }
+</style></head><body>
+<form onsubmit="login(event)">
+<img src="icon-192.png" alt="">
+<h1>GRFS ADMIN</h1>
+<input id="password" type="password" placeholder="Senha" autocomplete="current-password" autofocus required>
+<button>Entrar</button>
+<p id="error"></p>
+</form>
+<script>
+if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js");
+async function login(event) {
+  event.preventDefault();
+  const r = await fetch("login", {method: "POST", headers: {"Content-Type": "application/json"},
+                                  body: JSON.stringify({password: document.getElementById("password").value})});
+  if (r.ok) location.reload(); else document.getElementById("error").textContent = "Senha incorreta";
+}
+</script></body></html>
+"""
+
+MANIFEST = {
+    "name": "GRFS Admin", "short_name": "GRFS Admin",
+    "description": "Painel do servidor do Ghost Recon: Future Soldier no PS5",
+    "start_url": "./", "scope": "./", "display": "standalone",
+    "background_color": "#10161c", "theme_color": "#10161c", "lang": "pt-BR",
+    "icons": [{"src": "icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable"},
+              {"src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable"}],
+}
+
+# The app's service worker: the network always (the page shows live data),
+# a short offline notice without it.
+SERVICE_WORKER = """self.addEventListener("install", () => self.skipWaiting());
+self.addEventListener("activate", event => event.waitUntil(self.clients.claim()));
+self.addEventListener("fetch", event => {
+  if (event.request.mode !== "navigate") return;
+  event.respondWith(fetch(event.request).catch(() => new Response(
+    "<!doctype html><meta name=viewport content='width=device-width'><body style='background:#10161c;" +
+    "color:#e6edf3;font:16px system-ui;display:grid;place-items:center;min-height:90vh'>" +
+    "<p>Sem conexão com o servidor.</p>", {headers: {"Content-Type": "text/html; charset=utf-8"}})));
+});
+"""
+APP_FILES = {"/icon-192.png", "/icon-512.png", "/apple-touch-icon.png"}
+SESSION_DAYS = 90
+
 SERIAL = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 
 CATEGORIES = ["", "MP", "SP", "CIS", "WEB", "MOB", "XBLA"]
@@ -123,13 +193,30 @@ CATEGORIES = ["", "MP", "SP", "CIS", "WEB", "MOB", "XBLA"]
 PAGE = """<!doctype html>
 <html lang="pt-br"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Ghost Feed</title>
+<title>GRFS Admin</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<meta name="theme-color" content="#10161c">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="GRFS Admin">
 <style>
 :root { --bg:#10161c; --panel:#1a232c; --line:#2c3a47; --text:#e6edf3; --muted:#8b9aa8;
         --accent:#5fb3e6; --danger:#e5534b; }
 * { box-sizing:border-box; }
 body { margin:0; background:var(--bg); color:var(--text); font:15px system-ui,sans-serif; }
-main { max-width:860px; margin:0 auto; padding:24px 16px 80px; }
+main { max-width:860px; margin:0 auto; padding:12px 16px 80px;
+       padding-left:max(16px, env(safe-area-inset-left)); padding-right:max(16px, env(safe-area-inset-right)); }
+nav { position:sticky; top:0; z-index:5; background:var(--bg); display:flex; gap:6px; overflow-x:auto;
+      padding:10px 0; padding-top:max(10px, env(safe-area-inset-top)); margin-bottom:8px;
+      border-bottom:1px solid var(--line); scrollbar-width:none; }
+nav a { flex:none; color:var(--muted); text-decoration:none; padding:6px 12px; border-radius:999px;
+        border:1px solid var(--line); font-size:14px; }
+nav a:active { background:var(--line); }
+nav .out { margin-left:auto; }
+section { scroll-margin-top:64px; }
+h1 { margin-top:16px !important; }
 h1 { font-size:22px; letter-spacing:.04em; margin:0 0 4px; }
 p.hint { color:var(--muted); margin:0 0 20px; }
 .card { background:var(--panel); border:1px solid var(--line); border-radius:8px;
@@ -157,31 +244,38 @@ td.n, th.n { text-align:right; font-variant-numeric:tabular-nums; }
 .bar { position:sticky; bottom:0; background:var(--bg); padding:12px 0;
        display:flex; gap:8px; align-items:center; border-top:1px solid var(--line); }
 #status { color:var(--muted); }
+button, nav a { min-height:36px; }
+@media (max-width:560px) { body { font-size:16px; } .row > * { flex-basis:100%; }
+  table { font-size:13px; } input, select, textarea { font-size:16px; } }
 </style></head><body><main>
-<h1>ESTATÍSTICAS</h1>
+<nav><a href="#s_stats">Estatísticas</a><a href="#s_players">Jogadores</a><a href="#s_support">Ajuda</a>
+<a href="#s_donors">Doadores</a><a href="#s_feed">Ghost Feed</a>
+<a class="out" href="#" onclick="logout(); return false">Sair</a></nav>
+<section id="s_stats"><h1>ESTATÍSTICAS</h1>
 <p class="hint">Jogadores ativos, quem está na sala do online agora e os consoles que enviaram
 ou baixaram o cache de shaders compartilhado (contado desde 25/10/2026).</p>
-<div id="stats"></div>
-<h1>JOGADORES</h1>
+<div id="stats"></div></section>
+<section id="s_players"><h1>JOGADORES</h1>
 <p class="hint">Consoles PS5 que abriram o jogo, pelo ID do console. Banir bloqueia o online (VPS).
 O XP salvo ou zerado aqui substitui o do console na próxima sincronização (ao abrir o jogo, ou em até 5 minutos).
 Níveis: 1000 XP = nível 1, 3500 = 2, 7000 = 3, 11500 = 4.</p>
-<div id="players"></div>
-<h1>AJUDE A ME MANTER ATIVO</h1>
+<div id="players"></div></section>
+<section id="s_support"><h1>AJUDE A ME MANTER ATIVO</h1>
 <p class="hint">A tela que abre no menu principal: título, texto e um QR code do link.</p>
 <div class="card">
   <div class="row"><div><label>Título</label><input id="s_title"></div></div>
   <div class="row"><div><label>Link (vira o QR code)</label><input id="s_url" placeholder="https://..."></div></div>
   <div class="row"><div><label>Texto</label><textarea id="s_text"></textarea></div></div>
 </div>
-<h1>DOADORES</h1>
+</section>
+<section id="s_donors"><h1>DOADORES</h1>
 <p class="hint">A aba DOADORES do Ghost Feed, na ordem da lista. A mensagem é opcional.</p>
 <div id="donors"></div>
-<p><button onclick="addDonor()">+ Novo doador</button></p>
-<h1>GHOST FEED</h1>
+<p><button onclick="addDonor()">+ Novo doador</button></p></section>
+<section id="s_feed"><h1>GHOST FEED</h1>
 <p class="hint">Mensagens que o jogo mostra em COMMUNITY MESSAGES. A primeira da lista
 aparece primeiro. O jogo baixa de novo a cada minuto.</p>
-<div id="list"></div>
+<div id="list"></div></section>
 <div class="bar">
   <button onclick="add()">+ Nova mensagem</button>
   <button class="primary" onclick="save()">Salvar</button>
@@ -189,6 +283,12 @@ aparece primeiro. O jogo baixa de novo a cada minuto.</p>
 </div>
 </main>
 <script>
+// A session ended (or the password changed): back to the login.
+const nativeFetch = window.fetch;
+window.fetch = async (...args) => { const r = await nativeFetch(...args);
+  if (r.status === 401) location.reload(); return r; };
+async function logout() { await nativeFetch("logout", {method: "POST"}); location.reload(); }
+if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js");
 const CATEGORIES = %CATEGORIES%;
 const NAMES = {"":"(nenhuma)", MP:"Multijogador", SP:"Campanha", CIS:"CIS", WEB:"Web",
                MOB:"Celular", XBLA:"XBLA"};
@@ -315,7 +415,10 @@ function renderStats(st) {
   box.append(table("Baixaram shaders (a cada abertura do jogo)", who,
                    st.downloads.map(e => [e.who, e.count, e.first, e.last])));
 }
-fetch("api/stats").then(r => r.json()).then(renderStats);
+const loadStats = () => fetch("api/stats").then(r => r.json()).then(renderStats);
+loadStats();
+setInterval(() => { if (!document.hidden) loadStats(); }, 30000);
+document.addEventListener("visibilitychange", () => { if (!document.hidden) loadStats(); });
 fetch("api/news").then(r => r.json()).then(n => { news = n; render(); });
 fetch("api/donors").then(r => r.json()).then(d => { donors = d; renderDonors(); });
 loadPlayers();
@@ -699,6 +802,19 @@ class Store:
 
 def make_handler(store, password, admin_local=False):
     expected = "Basic " + base64.b64encode(f"admin:{password}".encode()).decode()
+    app_folder = os.path.join(os.path.dirname(os.path.abspath(__file__)), "admin_app")
+
+    def session_sign(expiry):
+        return hmac.new(password.encode(), f"session:{expiry}".encode(), hashlib.sha256).hexdigest()
+
+    def new_session():
+        expiry = str(int(time.time()) + SESSION_DAYS * 86400)
+        return f"{expiry}.{session_sign(expiry)}"
+
+    def valid_session(token):
+        expiry, _, signature = token.partition(".")
+        return expiry.isdigit() and int(expiry) > time.time() and \
+            hmac.compare_digest(signature, session_sign(expiry))
 
     class Handler(http.server.BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.0"
@@ -713,14 +829,37 @@ def make_handler(store, password, admin_local=False):
             self.end_headers()
             self.wfile.write(data)
 
-        def authorized(self):
+        def local(self):
             if admin_local and self.client_address[0] not in ("127.0.0.1", "::1"):
                 self.send(403, "use the https:// address")
                 return False
-            if hmac.compare_digest(self.headers.get("Authorization", ""), expected):
+            return True
+
+        def cookie(self):
+            for part in self.headers.get("Cookie", "").split(";"):
+                name, _, value = part.strip().partition("=")
+                if name == "gf_session":
+                    return value
+            return ""
+
+        def authorized(self, page=False):
+            """The session cookie (or Basic auth, for scripts); without it the
+            page gets the login form, the API a 401."""
+            if not self.local():
+                return False
+            if valid_session(self.cookie()) or \
+                    hmac.compare_digest(self.headers.get("Authorization", ""), expected):
                 return True
-            self.send(401, "login required", headers=[("WWW-Authenticate", 'Basic realm="Ghost Feed"')])
+            if page:
+                self.send(200, LOGIN, "text/html; charset=utf-8", [("Cache-Control", "no-store")])
+            else:
+                self.send(401, "login required")
             return False
+
+        def session_cookie(self, value, age):
+            secure = "; Secure" if admin_local else ""
+            return ("Set-Cookie", f"gf_session={value}; Max-Age={age}; Path=/; HttpOnly; "
+                                  f"SameSite=Strict{secure}")
 
         def do_GET(self):
             if self.path == "/news.txt":
@@ -755,9 +894,20 @@ def make_handler(store, password, admin_local=False):
                         store.count("downloads", serial if SERIAL.match(serial)
                                     else "IP " + self.client_address[0])
             elif self.path in ("/", "/index.html"):
-                if self.authorized():
+                if self.authorized(page=True):
                     self.send(200, PAGE.replace("%CATEGORIES%", json.dumps(CATEGORIES)),
-                              "text/html; charset=utf-8")
+                              "text/html; charset=utf-8", [("Cache-Control", "no-store")])
+            elif self.path == "/manifest.webmanifest":
+                self.send(200, json.dumps(MANIFEST, ensure_ascii=False), "application/manifest+json")
+            elif self.path == "/sw.js":
+                self.send(200, SERVICE_WORKER, "text/javascript; charset=utf-8",
+                          [("Cache-Control", "no-cache")])
+            elif self.path in APP_FILES:
+                try:
+                    with open(os.path.join(app_folder, self.path[1:]), "rb") as f:
+                        self.send(200, f.read(), "image/png", [("Cache-Control", "max-age=86400")])
+                except OSError:
+                    self.send(404, "not found")
             elif self.path in ("/api/news", "/api/support", "/api/donors", "/api/players",
                                "/api/stats"):
                 if self.authorized():
@@ -772,6 +922,25 @@ def make_handler(store, password, admin_local=False):
                 self.send(404, "not found")
 
         def do_POST(self):
+            if self.path in ("/login", "/logout"):
+                if not self.local():
+                    return
+                if self.path == "/logout":
+                    self.send(200, "ok", headers=[self.session_cookie("", 0)])
+                    return
+                length = int(self.headers.get("Content-Length", "0"))
+                try:
+                    given = str(json.loads(self.rfile.read(min(length, 4096))).get("password", ""))
+                except (ValueError, AttributeError):
+                    given = ""
+                if hmac.compare_digest(given.encode(), password.encode()):
+                    self.send(200, "ok", headers=[self.session_cookie(new_session(),
+                                                                      SESSION_DAYS * 86400)])
+                else:
+                    # (slows down guessing)
+                    time.sleep(1)
+                    self.send(401, "wrong password")
+                return
             # A game's hello: "key=value" lines (serial, name, xp as six
             # numbers, choices as ID:choice pairs, spent as three numbers,
             # bought as class:weapon:hex), answered alike (banned, reason, xp,
