@@ -241,6 +241,8 @@ table { width:100%; border-collapse:collapse; font-size:14px; }
 th, td { text-align:left; padding:5px 6px; border-bottom:1px solid var(--line); }
 th { color:var(--muted); font-weight:500; font-size:12px; }
 td.n, th.n { text-align:right; font-variant-numeric:tabular-nums; }
+.on { color:#4ade80; font-size:12px; margin-left:4px; }
+.ban { color:var(--danger); font-size:12px; margin-left:4px; }
 .bar { position:sticky; bottom:0; background:var(--bg); padding:12px 0;
        display:flex; gap:8px; align-items:center; border-top:1px solid var(--line); }
 #status { color:var(--muted); }
@@ -248,13 +250,17 @@ button, nav a { min-height:36px; }
 @media (max-width:560px) { body { font-size:16px; } .row > * { flex-basis:100%; }
   table { font-size:13px; } input, select, textarea { font-size:16px; } }
 </style></head><body><main>
-<nav><a href="#s_stats">Estatísticas</a><a href="#s_players">Jogadores</a><a href="#s_support">Ajuda</a>
+<nav><a href="#s_stats">Estatísticas</a><a href="#s_ranking">Ranking</a><a href="#s_players">Jogadores</a><a href="#s_support">Ajuda</a>
 <a href="#s_donors">Doadores</a><a href="#s_feed">Ghost Feed</a>
 <a class="out" href="#" onclick="logout(); return false">Sair</a></nav>
 <section id="s_stats"><h1>ESTATÍSTICAS</h1>
 <p class="hint">Jogadores ativos, quem está na sala do online agora e os consoles que enviaram
 ou baixaram o cache de shaders compartilhado (contado desde 25/10/2026).</p>
 <div id="stats"></div></section>
+<section id="s_ranking"><h1>RANKING</h1>
+<p class="hint">Níveis por classe no multijogador, pelo XP total. Online = abriu o jogo nos últimos
+10 minutos. Os banidos só aparecem aqui, não na <a href="ranking" target="_blank" style="color:var(--accent)">página pública</a>.</p>
+<div id="ranking"></div></section>
 <section id="s_players"><h1>JOGADORES</h1>
 <p class="hint">Consoles PS5 que abriram o jogo, pelo ID do console. Banir bloqueia o online (VPS).
 O XP salvo ou zerado aqui substitui o do console na próxima sincronização (ao abrir o jogo, ou em até 5 minutos).
@@ -415,7 +421,25 @@ function renderStats(st) {
   box.append(table("Baixaram shaders (a cada abertura do jogo)", who,
                    st.downloads.map(e => [e.who, e.count, e.first, e.last])));
 }
-const loadStats = () => fetch("api/stats").then(r => r.json()).then(renderStats);
+function renderRanking(rows) {
+  const box = document.getElementById("ranking"); box.replaceChildren();
+  if (!rows.length) { box.append(el("p", {className: "hint", textContent: "Ninguém ainda."})); return; }
+  const head = [["#", 1], ["Jogador"], ["Bat.", 1], ["Eng.", 1], ["Atir.", 1], ["XP", 1]];
+  let place = 0;
+  box.append(el("div", {className: "card"}, el("table", {},
+    el("tr", {}, ...head.map(([h, n]) => el("th", {textContent: h, className: n ? "n" : ""}))),
+    ...rows.map(r => {
+      const who = el("td", {textContent: r.name});
+      if (r.online) who.append(el("span", {className: "on", textContent: "● online"}));
+      if (r.banned) who.append(el("span", {className: "ban", textContent: "banido"}));
+      return el("tr", {}, el("td", {className: "n", textContent: r.banned ? "–" : ++place}), who,
+                ...r.levels.map(lv => el("td", {className: "n", textContent: lv})),
+                el("td", {className: "n", textContent: r.xp.toLocaleString("pt-BR")}));
+    }))));
+}
+const loadStats = () => Promise.all([
+  fetch("api/stats").then(r => r.json()).then(renderStats),
+  fetch("api/ranking").then(r => r.json()).then(renderRanking)]);
 loadStats();
 setInterval(() => { if (!document.hidden) loadStats(); }, 30000);
 document.addEventListener("visibilitychange", () => { if (!document.hidden) loadStats(); });
@@ -643,12 +667,12 @@ class Store:
             self.version = (tag, time.time())
         return tag
 
-    def ranking(self):
-        """The public page of the players' levels."""
+    def ranking_rows(self, banned=False):
+        """The players by total XP: (XP, name, class levels, online, banned)."""
         now = datetime.datetime.now()
         rows = []
         for p in self.load_players().values():
-            if p.get("banned"):
+            if p.get("banned") and not banned:
                 continue
             try:
                 seen = datetime.datetime.strptime(p.get("last_seen", ""), "%Y-%m-%d %H:%M")
@@ -656,8 +680,19 @@ class Store:
                 seen = None
             online = seen is not None and now - seen < datetime.timedelta(minutes=10)
             levels = [level(x) for x in p["xp"][:3]]
-            rows.append((sum(p["xp"][:3]), p.get("name") or "?", levels, online))
+            rows.append((sum(p["xp"][:3]), p.get("name") or "?", levels, online,
+                         bool(p.get("banned"))))
         rows.sort(key=lambda r: -r[0])
+        return rows
+
+    def ranking_api(self):
+        """The page's ranking, banned players included (marked)."""
+        return [{"name": name, "xp": xp, "levels": levels, "online": online, "banned": banned}
+                for xp, name, levels, online, banned in self.ranking_rows(banned=True)]
+
+    def ranking(self):
+        """The public page of the players' levels."""
+        rows = self.ranking_rows()
         def html(text):
             return (str(text).replace("&", "&amp;").replace("<", "&lt;")
                     .replace(">", "&gt;").replace('"', "&quot;"))
@@ -665,7 +700,7 @@ class Store:
             f"<tr><td>{i + 1}</td><td>{html(name)}{' <span class=on>● online</span>' if on else ''}"
             f"</td>{''.join(f'<td>{lv}</td>' for lv in levels)}"
             f"<td>{f'{xp:,}'.replace(',', '.')}</td></tr>"
-            for i, (xp, name, levels, on) in enumerate(rows))
+            for i, (xp, name, levels, on, _) in enumerate(rows))
         online = sum(1 for r in rows if r[3])
         return RANKING.replace("%ROWS%", body or "<tr><td colspan=6>Ninguém ainda.</td></tr>") \
             .replace("%ONLINE%", str(online)).replace("%COUNT%", str(len(rows)))
@@ -909,10 +944,11 @@ def make_handler(store, password, admin_local=False):
                 except OSError:
                     self.send(404, "not found")
             elif self.path in ("/api/news", "/api/support", "/api/donors", "/api/players",
-                               "/api/stats"):
+                               "/api/stats", "/api/ranking"):
                 if self.authorized():
                     data = {"/api/news": store.load, "/api/support": store.load_support,
                             "/api/donors": store.load_donors, "/api/stats": store.stats,
+                            "/api/ranking": store.ranking_api,
                             "/api/players": lambda: sorted(store.load_players().values(),
                                                            key=lambda p: p.get("last_seen", ""),
                                                            reverse=True)}[self.path]()
