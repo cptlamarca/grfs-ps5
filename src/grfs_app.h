@@ -2,6 +2,9 @@
 #pragma once
 
 #include <atomic>
+#include <functional>
+#include <memory>
+#include <optional>
 #include <mutex>
 #include <string>
 
@@ -36,6 +39,10 @@ class GrfsApp : public rex::ReXApp {
   std::filesystem::path GameFolder() const { return game_data_root(); }
 
   void OnConfigurePaths(rex::PathConfig& paths) override;
+  // Without the game's disc files, a screen to extract them from an ISO
+  // first (src/iso_screen.cpp).
+  std::optional<rex::PathConfig> OnFinalizePaths(const rex::PathConfig& defaults,
+                                                 std::function<void(rex::PathConfig)> resume) override;
   void OnPostLoadXexImage() override;
 
  protected:
@@ -47,6 +54,7 @@ class GrfsApp : public rex::ReXApp {
 
  private:
   static inline GrfsApp* instance_ = nullptr;
+  std::unique_ptr<rex::ui::ImGuiDialog> iso_screen_;
   enum class Overlay { kTrophies, kSupport, kDonors, kNotice, kDecision };
   std::atomic<Overlay> overlay_{Overlay::kTrophies};
   std::mutex notice_mutex_;

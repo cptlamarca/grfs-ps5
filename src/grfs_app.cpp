@@ -17,6 +17,7 @@
 #include <imgui.h>
 
 #include "achievements_ui.h"
+#include "iso_screen.h"
 #include "language_patch.h"
 #include "player_account.h"
 #include "shader_seed.h"
@@ -171,6 +172,24 @@ void GrfsApp::OnConfigurePaths(rex::PathConfig& paths) {
     std::ofstream(paths.config_path, std::ios::trunc) << kDefaultConfig;
   }
   ApplyNextTestProfile(app, paths.config_path);
+}
+
+std::optional<rex::PathConfig> GrfsApp::OnFinalizePaths(
+    const rex::PathConfig& defaults, std::function<void(rex::PathConfig)> resume) {
+  if (IsoScreen::HasGameFiles(defaults.game_data_root) || !imgui_drawer()) {
+    return defaults;
+  }
+  REXLOG_WARN("No game files in {}: showing the ISO screen", defaults.game_data_root.string());
+  iso_screen_ = std::make_unique<IsoScreen>(
+      imgui_drawer(), font_, title_font_, defaults.game_data_root,
+      [this, defaults, resume = std::move(resume)] {
+        // (after this draw: the screen goes, then the game starts)
+        app_context().CallInUIThreadDeferred([this, defaults, resume] {
+          iso_screen_.reset();
+          resume(defaults);
+        });
+      });
+  return std::nullopt;
 }
 
 void GrfsApp::OnPostLoadXexImage() {
