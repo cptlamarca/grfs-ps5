@@ -208,14 +208,17 @@ PAGE = """<!doctype html>
 body { margin:0; background:var(--bg); color:var(--text); font:15px system-ui,sans-serif; }
 main { max-width:860px; margin:0 auto; padding:12px 16px 80px;
        padding-left:max(16px, env(safe-area-inset-left)); padding-right:max(16px, env(safe-area-inset-right)); }
-nav { position:sticky; top:0; z-index:5; background:var(--bg); display:flex; gap:6px; overflow-x:auto;
+nav { position:sticky; top:0; z-index:5; background:var(--bg); display:flex; flex-wrap:wrap; gap:6px;
       padding:10px 0; padding-top:max(10px, env(safe-area-inset-top)); margin-bottom:8px;
       border-bottom:1px solid var(--line); scrollbar-width:none; }
 nav a { flex:none; color:var(--muted); text-decoration:none; padding:6px 12px; border-radius:999px;
         border:1px solid var(--line); font-size:14px; }
 nav a:active { background:var(--line); }
+nav a.active { color:#06121b; background:var(--accent); border-color:var(--accent); font-weight:600; }
+section { display:none; }
+section.active { display:block; }
+.bar.hidden { display:none; }
 nav .out { margin-left:auto; }
-section { scroll-margin-top:64px; }
 h1 { margin-top:16px !important; }
 h1 { font-size:22px; letter-spacing:.04em; margin:0 0 4px; }
 p.hint { color:var(--muted); margin:0 0 20px; }
@@ -281,9 +284,9 @@ Níveis: 1000 XP = nível 1, 3500 = 2, 7000 = 3, 11500 = 4.</p>
 <section id="s_feed"><h1>GHOST FEED</h1>
 <p class="hint">Mensagens que o jogo mostra em COMMUNITY MESSAGES. A primeira da lista
 aparece primeiro. O jogo baixa de novo a cada minuto.</p>
+<p><button onclick="add()">+ Nova mensagem</button></p>
 <div id="list"></div></section>
-<div class="bar">
-  <button onclick="add()">+ Nova mensagem</button>
+<div class="bar" id="bar">
   <button class="primary" onclick="save()">Salvar</button>
   <span id="status"></span>
 </div>
@@ -295,6 +298,24 @@ window.fetch = async (...args) => { const r = await nativeFetch(...args);
   if (r.status === 401) location.reload(); return r; };
 async function logout() { await nativeFetch("logout", {method: "POST"}); location.reload(); }
 if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js");
+// One tab at a time (the address's #, or the last one seen); the save bar
+// only on the tabs it saves.
+const EDITED = ["s_support", "s_donors", "s_feed"];
+function showTab(id) {
+  if (!document.getElementById(id)) id = "s_stats";
+  document.querySelectorAll("section").forEach(sec => sec.classList.toggle("active", sec.id === id));
+  document.querySelectorAll("nav a[href^='#s_']").forEach(a =>
+    a.classList.toggle("active", a.getAttribute("href") === "#" + id));
+  document.getElementById("bar").classList.toggle("hidden", !EDITED.includes(id));
+  try { localStorage.setItem("tab", id); } catch (e) {}
+  window.scrollTo(0, 0);
+}
+window.addEventListener("hashchange", () => showTab(location.hash.slice(1)));
+document.addEventListener("DOMContentLoaded", () => {
+  let last = "";
+  try { last = localStorage.getItem("tab") || ""; } catch (e) {}
+  showTab(location.hash.slice(1) || last);
+});
 const CATEGORIES = %CATEGORIES%;
 const NAMES = {"":"(nenhuma)", MP:"Multijogador", SP:"Campanha", CIS:"CIS", WEB:"Web",
                MOB:"Celular", XBLA:"XBLA"};
