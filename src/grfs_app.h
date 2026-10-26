@@ -9,6 +9,7 @@
 #include <string>
 
 #include <rex/rex_app.h>
+#include <rex/ui/immediate_drawer.h>
 
 struct ImFont;
 
@@ -35,6 +36,10 @@ class GrfsApp : public rex::ReXApp {
   // The System Link decision point waiting for a choice, if there is one.
   void ShowDecision();
 
+  // The game's skull art (iso_screen.h), made once, for the port's screens
+  // (from the UI thread).
+  rex::ui::ImmediateTexture* SkullTexture(float& aspect);
+
   // The game folder, for the UI.
   std::filesystem::path GameFolder() const { return game_data_root(); }
 
@@ -55,6 +60,8 @@ class GrfsApp : public rex::ReXApp {
  private:
   static inline GrfsApp* instance_ = nullptr;
   std::unique_ptr<rex::ui::ImGuiDialog> iso_screen_;
+  std::unique_ptr<rex::ui::ImmediateTexture> skull_;
+  float skull_aspect_ = 1.6f;
   enum class Overlay { kTrophies, kSupport, kDonors, kNotice, kDecision };
   std::atomic<Overlay> overlay_{Overlay::kTrophies};
   std::mutex notice_mutex_;

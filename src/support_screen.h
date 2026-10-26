@@ -13,6 +13,8 @@
 
 #include <rex/ui/imgui_dialog.h>
 
+#include "iso_screen.h"
+
 struct ImFont;
 
 namespace rex {
@@ -38,6 +40,11 @@ class OverlayScreen : public rex::ui::ImGuiDialog {
   bool closed() const { return hidden_; }
   // Hides the screen once every button is up.
   void Close() { closing_ = true; }
+  // Seconds since first drawn, for the animations.
+  float ShownSeconds();
+  // The game's skull art behind it (iso_screen.h), and a fade from black.
+  void DrawBackground(ImDrawList* draw, ImVec2 display, float t, float scale, SkullShade shade);
+  static void FadeIn(ImVec2 display, float appear);
 
   rex::ReXApp* app_;
   rex::Runtime* runtime_;
@@ -48,6 +55,7 @@ class OverlayScreen : public rex::ui::ImGuiDialog {
   bool pad_released_ = false;
   bool closing_ = false;
   bool hidden_ = false;
+  double shown_at_ = -1.0;
   uint16_t previous_buttons_ = 0;
 };
 
@@ -109,5 +117,6 @@ class DonorsScreen : public OverlayScreen {
 
  private:
   int selected_ = 0;
-  int scroll_to_ = -1;
+  // The list's scroll, easing to the selected donor.
+  float scroll_ = 0.0f;
 };

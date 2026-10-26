@@ -2,6 +2,7 @@
 // here directly (the runtime's input driver opens it again later).
 
 #include "iso_screen.h"
+#include "screen_style.h"
 
 #include <algorithm>
 #include <cctype>
@@ -55,15 +56,8 @@ constexpr uint32_t kPadCircle = 0x2000, kPadCross = 0x4000, kPadSquare = 0x8000;
 constexpr float kFontScaleAt1080 = 0.5f;
 constexpr ImVec4 kText = ImVec4(1.0f, 1.0f, 1.0f, 1.0f);
 constexpr ImVec4 kDimText = ImVec4(0.74f, 0.80f, 0.84f, 1.0f);
-constexpr ImVec4 kAccent = ImVec4(0.40f, 0.80f, 1.0f, 1.0f);
 constexpr ImVec4 kError = ImVec4(1.0f, 0.62f, 0.58f, 1.0f);
 
-ImVec4 WithAlpha(ImVec4 color, float alpha) {
-  color.w *= alpha;
-  return color;
-}
-
-float EaseOut(float x) { return 1.0f - (1.0f - x) * (1.0f - x) * (1.0f - x); }
 
 // The folder as the console's storage has it: the app's own is mounted at
 // /app0, from /data/homebrew/<title ID> (where FTP shows it) or a USB
@@ -215,6 +209,86 @@ extern "C" const uint8_t grfs_iso_payload_end[];
 extern "C" const uint8_t grfs_iso_background[];
 extern "C" const uint8_t grfs_iso_background_end[];
 
+std::unique_ptr<rex::ui::ImmediateTexture> CreateSkullTexture(
+    rex::ui::ImmediateDrawer* immediate_drawer, float& aspect) {
+  int width = 0, height = 0;
+  std::vector<uint8_t> pixels = rex::ui::DecodeImageRGBA(
+      grfs_iso_background, size_t(grfs_iso_background_end - grfs_iso_background), width, height);
+  if (!immediate_drawer || pixels.empty()) {
+    return nullptr;
+  }
+  aspect = float(width) / float(height);
+  return immediate_drawer->CreateTexture(uint32_t(width), uint32_t(height),
+                                         rex::ui::ImmediateTextureFilter::kLinear, false,
+                                         pixels.data());
+}
+
+void DrawSkullBackground(ImDrawList* draw, rex::ui::ImmediateTexture* texture, float aspect,
+                         ImVec2 display, float t, float scale, SkullShade shade_kind) {
+  // The wallpaper, covering the screen, in a slow drift and zoom about
+  // the skull.
+  ImVec2 uv0(0, 0), uv1(1, 1);
+  {
+    const float screen_aspect = display.x / std::max(display.y, 1.0f);
+    float width = 1.0f, height = 1.0f;
+    if (screen_aspect > aspect) {
+      height = aspect / screen_aspect;
+    } else {
+      width = screen_aspect / aspect;
+    }
+    const float zoom = 1.06f + 0.04f * std::sin(t * 0.11f);
+    width /= zoom;
+    height /= zoom;
+    const float cx = std::clamp(0.60f + 0.015f * std::sin(t * 0.07f), width / 2, 1 - width / 2);
+    const float cy = std::clamp(0.50f + 0.012f * std::cos(t * 0.09f), height / 2, 1 - height / 2);
+    uv0 = ImVec2(cx - width / 2, cy - height / 2);
+    uv1 = ImVec2(cx + width / 2, cy + height / 2);
+  }
+  auto to_screen = [&](float u, float v) {
+    return ImVec2((u - uv0.x) / (uv1.x - uv0.x) * display.x,
+                  (v - uv0.y) / (uv1.y - uv0.y) * display.y);
+  };
+  if (texture) {
+    draw->AddImage(reinterpret_cast<ImTextureID>(texture), ImVec2(0, 0), display, uv0, uv1);
+  } else {
+    draw->AddRectFilledMultiColor(ImVec2(0, 0), display, IM_COL32(16, 30, 40, 255),
+                                  IM_COL32(16, 30, 40, 255), IM_COL32(4, 8, 12, 255),
+                                  IM_COL32(4, 8, 12, 255));
+  }
+  // The skull's crack glows, pulsing.
+  {
+    const ImVec2 crack = to_screen(0.77f, 0.24f);
+    const float pulse = 0.5f + 0.5f * std::sin(t * 1.8f);
+    for (int i = 6; i >= 1; --i) {
+      const float radius = (40.0f + i * 34.0f) * scale * (0.9f + 0.15f * pulse);
+      draw->AddCircleFilled(crack, radius, IM_COL32(70, 190, 255, int(5 + 5 * pulse)), 48);
+    }
+  }
+  const ImU32 shade = IM_COL32(2, 8, 12, 235), clear = IM_COL32(2, 8, 12, 0);
+  if (shade_kind == SkullShade::kLeft) {
+    // Dark on the left, under the text; clear over the skull.
+    draw->AddRectFilled(ImVec2(0, 0), ImVec2(display.x * 0.38f, display.y), shade);
+    draw->AddRectFilledMultiColor(ImVec2(display.x * 0.38f, 0),
+                                  ImVec2(display.x * 0.72f, display.y), shade, clear, clear, shade);
+  } else {
+    // Dark all over, a little less on the skull's side.
+    const ImU32 lighter = IM_COL32(2, 8, 12, 175);
+    draw->AddRectFilledMultiColor(ImVec2(0, 0), display, shade, lighter, lighter, shade);
+  }
+  draw->AddRectFilledMultiColor(ImVec2(0, display.y * 0.80f), display, clear, clear,
+                                IM_COL32(0, 0, 0, 200), IM_COL32(0, 0, 0, 200));
+  // A tactical scan line sweeping down, every 7 seconds.
+  {
+    const float y = std::fmod(t / 7.0f, 1.0f) * display.y * 1.2f - display.y * 0.1f;
+    const float trail = 90.0f * scale;
+    draw->AddRectFilledMultiColor(ImVec2(0, y - trail), ImVec2(display.x, y),
+                                  IM_COL32(80, 200, 255, 0), IM_COL32(80, 200, 255, 0),
+                                  IM_COL32(80, 200, 255, 18), IM_COL32(80, 200, 255, 18));
+    draw->AddRectFilled(ImVec2(0, y), ImVec2(display.x, y + 2.0f * scale),
+                        IM_COL32(120, 215, 255, 50));
+  }
+}
+
 bool IsoScreen::HasGameFiles(const std::filesystem::path& folder) {
   std::error_code ec;
   return std::filesystem::exists(folder / kGameFile, ec);
@@ -232,15 +306,7 @@ IsoScreen::IsoScreen(rex::ui::ImGuiDrawer* imgui_drawer,
   sceUserServiceInitialize(nullptr);
   scePadInit();
 #endif
-  int width = 0, height = 0;
-  std::vector<uint8_t> pixels = rex::ui::DecodeImageRGBA(
-      grfs_iso_background, size_t(grfs_iso_background_end - grfs_iso_background), width, height);
-  if (immediate_drawer && !pixels.empty()) {
-    background_ = immediate_drawer->CreateTexture(uint32_t(width), uint32_t(height),
-                                                  rex::ui::ImmediateTextureFilter::kLinear, false,
-                                                  pixels.data());
-    background_aspect_ = float(width) / float(height);
-  }
+  background_ = CreateSkullTexture(immediate_drawer, background_aspect_);
   Search();
 }
 
@@ -566,63 +632,8 @@ void IsoScreen::OnDraw(ImGuiIO& io) {
   if (ImGui::Begin("##grfs_iso", nullptr, kFlags)) {
     ImDrawList* draw = ImGui::GetWindowDrawList();
 
-    // The wallpaper, covering the screen, in a slow drift and zoom about
-    // the skull.
-    ImVec2 uv0(0, 0), uv1(1, 1);
-    {
-      const float screen_aspect = display.x / std::max(display.y, 1.0f);
-      float width = 1.0f, height = 1.0f;
-      if (screen_aspect > background_aspect_) {
-        height = background_aspect_ / screen_aspect;
-      } else {
-        width = screen_aspect / background_aspect_;
-      }
-      const float zoom = 1.06f + 0.04f * std::sin(t * 0.11f);
-      width /= zoom;
-      height /= zoom;
-      const float cx = std::clamp(0.60f + 0.015f * std::sin(t * 0.07f), width / 2, 1 - width / 2);
-      const float cy = std::clamp(0.50f + 0.012f * std::cos(t * 0.09f), height / 2, 1 - height / 2);
-      uv0 = ImVec2(cx - width / 2, cy - height / 2);
-      uv1 = ImVec2(cx + width / 2, cy + height / 2);
-    }
-    auto to_screen = [&](float u, float v) {
-      return ImVec2((u - uv0.x) / (uv1.x - uv0.x) * display.x,
-                    (v - uv0.y) / (uv1.y - uv0.y) * display.y);
-    };
-    if (background_) {
-      draw->AddImage(reinterpret_cast<ImTextureID>(background_.get()), ImVec2(0, 0), display, uv0,
-                     uv1);
-    } else {
-      draw->AddRectFilledMultiColor(ImVec2(0, 0), display, IM_COL32(16, 30, 40, 255),
-                                    IM_COL32(16, 30, 40, 255), IM_COL32(4, 8, 12, 255),
-                                    IM_COL32(4, 8, 12, 255));
-    }
-    // The skull's crack glows, pulsing.
-    {
-      const ImVec2 crack = to_screen(0.77f, 0.24f);
-      const float pulse = 0.5f + 0.5f * std::sin(t * 1.8f);
-      for (int i = 6; i >= 1; --i) {
-        const float radius = (40.0f + i * 34.0f) * scale * (0.9f + 0.15f * pulse);
-        draw->AddCircleFilled(crack, radius, IM_COL32(70, 190, 255, int(5 + 5 * pulse)), 48);
-      }
-    }
-    // Shade under the text: dark on the left, clear over the skull.
-    const ImU32 shade = IM_COL32(2, 8, 12, 235), clear = IM_COL32(2, 8, 12, 0);
-    draw->AddRectFilled(ImVec2(0, 0), ImVec2(display.x * 0.38f, display.y), shade);
-    draw->AddRectFilledMultiColor(ImVec2(display.x * 0.38f, 0), ImVec2(display.x * 0.72f, display.y),
-                                  shade, clear, clear, shade);
-    draw->AddRectFilledMultiColor(ImVec2(0, display.y * 0.80f), display, clear, clear,
-                                  IM_COL32(0, 0, 0, 200), IM_COL32(0, 0, 0, 200));
-    // A tactical scan line sweeping down, every 7 seconds.
-    {
-      const float y = std::fmod(t / 7.0f, 1.0f) * display.y * 1.2f - display.y * 0.1f;
-      const float trail = 90.0f * scale;
-      draw->AddRectFilledMultiColor(ImVec2(0, y - trail), ImVec2(display.x, y),
-                                    IM_COL32(80, 200, 255, 0), IM_COL32(80, 200, 255, 0),
-                                    IM_COL32(80, 200, 255, 18), IM_COL32(80, 200, 255, 18));
-      draw->AddRectFilled(ImVec2(0, y), ImVec2(display.x, y + 2.0f * scale),
-                          IM_COL32(120, 215, 255, 50));
-    }
+    DrawSkullBackground(draw, background_.get(), background_aspect_, display, t, scale,
+                        SkullShade::kLeft);
 
     if (font_) {
       ImGui::PushFont(font_);
@@ -633,18 +644,8 @@ void IsoScreen::OnDraw(ImGuiIO& io) {
     const float slide = (1.0f - appear) * -80.0f * scale;
 
     // HUD corner brackets about the panel, drawn out as it appears.
-    {
-      const ImVec2 a(left - 40.0f * scale, top - 40.0f * scale);
-      const ImVec2 b(right + 40.0f * scale, display.y - 60.0f * scale);
-      const float arm = 46.0f * scale * appear, thickness = 3.0f * scale;
-      const ImU32 color = IM_COL32(90, 200, 255, int(200 * appear));
-      for (int corner = 0; corner < 4; ++corner) {
-        const float x = corner & 1 ? b.x : a.x, y = corner & 2 ? b.y : a.y;
-        const float dx = corner & 1 ? -arm : arm, dy = corner & 2 ? -arm : arm;
-        draw->AddLine(ImVec2(x, y), ImVec2(x + dx, y), color, thickness);
-        draw->AddLine(ImVec2(x, y), ImVec2(x, y + dy), color, thickness);
-      }
-    }
+    DrawHudCorners(draw, ImVec2(left - 40.0f * scale, top - 40.0f * scale),
+                   ImVec2(right + 40.0f * scale, display.y - 60.0f * scale), scale, appear);
 
     // The kicker and the title, sliding in.
     const bool extracting = state == State::kExtracting || state == State::kDone;

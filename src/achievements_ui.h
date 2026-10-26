@@ -6,6 +6,7 @@
 
 #include <chrono>
 #include <deque>
+#include <memory>
 #include <mutex>
 #include <optional>
 
@@ -50,8 +51,14 @@ class AchievementsScreen : public rex::ui::ImGuiDialog {
   bool closing_ = false;
   uint16_t previous_buttons_ = 0;
   int selected_ = 0;
-  int scroll_to_ = -1;
   double repeat_time_ = 0.0;
+
+  // The skull art behind it, and the animations: time since shown and the
+  // list's scroll, easing to the focused trophy.
+  std::unique_ptr<rex::ui::ImmediateTexture> background_;
+  float background_aspect_ = 1.6f;
+  double shown_at_ = -1.0;
+  float scroll_ = 0.0f;
 };
 
 // Unlock notification, like the Xbox 360's, big enough for a TV.

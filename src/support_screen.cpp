@@ -24,7 +24,10 @@
 #include <rex/system/xam/content_manager.h>
 
 #include "achievements_ui.h"
+#include "grfs_app.h"
+#include "iso_screen.h"
 #include "news_hooks.h"
+#include "screen_style.h"
 #include "third_party/qrcodegen/qrcodegen.hpp"
 
 REXCVAR_DEFINE_STRING(support_title, "", "GRFS",
@@ -154,6 +157,15 @@ void DrawCircleButton(ImDrawList* draw, ImVec2 center, float radius) {
   draw->AddCircle(center, radius * 0.5f, IM_COL32(20, 24, 32, 255), 24, radius * 0.17f);
 }
 
+// A heart, centred on c, s wide.
+void DrawHeart(ImDrawList* draw, ImVec2 c, float s, ImU32 color) {
+  const float r = s * 0.27f;
+  draw->AddCircleFilled(ImVec2(c.x - r * 0.95f, c.y - r * 0.45f), r, color, 20);
+  draw->AddCircleFilled(ImVec2(c.x + r * 0.95f, c.y - r * 0.45f), r, color, 20);
+  draw->AddTriangleFilled(ImVec2(c.x - r * 1.9f, c.y - r * 0.2f), ImVec2(c.x + r * 1.9f, c.y - r * 0.2f),
+                          ImVec2(c.x, c.y + s * 0.5f), color);
+}
+
 // The Circle "Back" hint, bottom right.
 void DrawBackHint(ImDrawList* draw, ImVec2 display, float scale) {
   const char* back = IsPortuguese() ? "Voltar" : "Back";
@@ -252,6 +264,29 @@ void DrawItemIcon(ImDrawList* draw, ImVec2 c, float s, uint32_t type, uint32_t n
 
 }  // namespace
 
+float OverlayScreen::ShownSeconds() {
+  const double now = ImGui::GetTime();
+  if (shown_at_ < 0.0) {
+    shown_at_ = now;
+  }
+  return float(now - shown_at_);
+}
+
+void OverlayScreen::DrawBackground(ImDrawList* draw, ImVec2 display, float t, float scale,
+                                   SkullShade shade) {
+  float aspect = 1.6f;
+  rex::ui::ImmediateTexture* texture =
+      GrfsApp::instance() ? GrfsApp::instance()->SkullTexture(aspect) : nullptr;
+  DrawSkullBackground(draw, texture, aspect, display, t, scale, shade);
+}
+
+void OverlayScreen::FadeIn(ImVec2 display, float appear) {
+  if (appear < 1.0f) {
+    ImGui::GetForegroundDrawList()->AddRectFilled(ImVec2(0, 0), display,
+                                                  IM_COL32(0, 0, 0, int(200 * (1.0f - appear))));
+  }
+}
+
 uint16_t OverlayScreen::PollPad() {
   // Nothing until the button that opened the screen is up; Circle or Back
   // closes it, hidden once that one is up too, so the game doesn't get it.
@@ -300,48 +335,80 @@ void SupportScreen::OnDraw(ImGuiIO& io) {
   const ImVec2 display = io.DisplaySize;
   const float scale = display.y / 1080.0f;
   const float font_scale = scale * kFontScaleAt1080;
+  const float t = ShownSeconds();
+  const float appear = EaseOut(std::clamp(t / 0.7f, 0.0f, 1.0f));
+  const float body = EaseOut(std::clamp((t - 0.2f) / 0.6f, 0.0f, 1.0f));
+  const float card = EaseOut(std::clamp((t - 0.35f) / 0.6f, 0.0f, 1.0f));
+  const float pulse = 0.5f + 0.5f * std::sin(t * 2.4f);
 
   ImGui::SetNextWindowPos(ImVec2(0, 0), ImGuiCond_Always);
   ImGui::SetNextWindowSize(display, ImGuiCond_Always);
   ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
   ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
-  ImGui::PushStyleColor(ImGuiCol_WindowBg, IM_COL32(0, 0, 0, 0));
+  ImGui::PushStyleColor(ImGuiCol_WindowBg, IM_COL32(0, 0, 0, 255));
   constexpr ImGuiWindowFlags kFlags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
                                       ImGuiWindowFlags_NoSavedSettings |
                                       ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoInputs |
                                       ImGuiWindowFlags_NoBringToFrontOnFocus;
   if (ImGui::Begin("##grfs_support", nullptr, kFlags)) {
     ImDrawList* draw = ImGui::GetWindowDrawList();
-    draw->AddRectFilledMultiColor(ImVec2(0, 0), display, kBackgroundTop, kBackgroundTop,
-                                  kBackgroundBottom, kBackgroundBottom);
+    DrawBackground(draw, display, t, scale, SkullShade::kLeft);
     if (font_) {
       ImGui::PushFont(font_);
     }
-    const float left = display.x * 0.10f;
-    const float qr_size = display.y * 0.46f;
+    const float left = display.x * 0.08f;
+    const float qr_size = display.y * 0.44f;
     const float qr_x = display.x * 0.90f - qr_size;
-    const float text_width = qr_x - left - 80.0f * scale;
+    const float text_right = qr_x - 110.0f * scale;
+    const float top = display.y * 0.14f;
+    const float slide = (1.0f - appear) * -70.0f * scale;
+    DrawHudCorners(draw, ImVec2(left - 40.0f * scale, top - 50.0f * scale),
+                   ImVec2(text_right + 30.0f * scale, display.y - 70.0f * scale), scale, appear);
 
-    // The title and the text, left; the QR code and its link, right.
+    // The kicker, the title (sliding in) and the text.
+    ImGui::SetWindowFontScale(font_scale * 0.6f);
+    ImGui::SetCursorPos(ImVec2(left + slide, top));
+    ImGui::TextColored(WithAlpha(kAccent, appear), "%s", "GHOST RECON: FUTURE SOLDIER  //  PS5");
     if (title_font_) {
       ImGui::PushFont(title_font_);
     }
     ImGui::SetWindowFontScale(font_scale * 0.9f);
-    ImGui::SetCursorPos(ImVec2(left, display.y * 0.16f));
-    ImGui::PushTextWrapPos(left + text_width);
-    ImGui::TextColored(kText, "%s", shown.title.c_str());
+    ImGui::SetCursorPos(ImVec2(left + slide * 1.6f, ImGui::GetCursorPosY() + 4.0f * scale));
+    ImGui::PushTextWrapPos(text_right);
+    ImGui::TextColored(WithAlpha(kText, appear), "%s", shown.title.c_str());
     ImGui::PopTextWrapPos();
     if (title_font_) {
       ImGui::PopFont();
     }
-    ImGui::SetWindowFontScale(font_scale);
-    ImGui::SetCursorPos(ImVec2(left, ImGui::GetCursorPosY() + 30.0f * scale));
-    ImGui::PushTextWrapPos(left + text_width);
-    ImGui::TextColored(kDimText, "%s", shown.text.c_str());
+    {
+      const float y = ImGui::GetCursorPosY() + 6.0f * scale;
+      draw->AddRectFilled(ImVec2(left, y), ImVec2(left + 140.0f * scale * appear, y + 4.0f * scale),
+                          IM_COL32(90, 200, 255, 255));
+      ImGui::SetCursorPosY(y + 34.0f * scale);
+    }
+    ImGui::SetWindowFontScale(font_scale * 0.8f);
+    ImGui::SetCursorPosX(left);
+    ImGui::PushTextWrapPos(text_right);
+    ImGui::TextColored(WithAlpha(kDimText, body), "%s", shown.text.c_str());
     ImGui::PopTextWrapPos();
 
+    // The QR code on a card, right, in a pulsing frame.
     if (!shown.url.empty()) {
-      const float qr_y = display.y * 0.16f;
+      const float qr_y = (display.y - qr_size) / 2 - 20.0f * scale + (1.0f - card) * 40.0f * scale;
+      const float frame = 18.0f * scale;
+      for (int ring = 3; ring >= 1; --ring) {
+        const float grow = frame + ring * 10.0f * scale * (0.8f + 0.4f * pulse);
+        draw->AddRectFilled(ImVec2(qr_x - grow, qr_y - grow),
+                            ImVec2(qr_x + qr_size + grow, qr_y + qr_size + grow),
+                            IM_COL32(70, 190, 255, int((8 + 6 * pulse) * card)), 22.0f * scale);
+      }
+      draw->AddRectFilled(ImVec2(qr_x - frame, qr_y - frame),
+                          ImVec2(qr_x + qr_size + frame, qr_y + qr_size + frame),
+                          IM_COL32(6, 14, 20, int(220 * card)), 18.0f * scale);
+      draw->AddRect(ImVec2(qr_x - frame, qr_y - frame),
+                    ImVec2(qr_x + qr_size + frame, qr_y + qr_size + frame),
+                    IM_COL32(110, 210, 255, int((120 + 120 * pulse) * card)), 18.0f * scale, 0,
+                    3.0f * scale);
       try {
         qrcodegen::QrCode qr =
             qrcodegen::QrCode::encodeText(shown.url.c_str(), qrcodegen::QrCode::Ecc::MEDIUM);
@@ -349,29 +416,32 @@ void SupportScreen::OnDraw(ImGuiIO& io) {
         const int size = qr.getSize();
         const float module = qr_size / float(size + 6);
         draw->AddRectFilled(ImVec2(qr_x, qr_y), ImVec2(qr_x + qr_size, qr_y + qr_size),
-                            IM_COL32(255, 255, 255, 255), 12.0f * scale);
+                            IM_COL32(255, 255, 255, int(255 * card)), 12.0f * scale);
         for (int y = 0; y < size; ++y) {
           for (int x = 0; x < size; ++x) {
             if (qr.getModule(x, y)) {
               ImVec2 corner(qr_x + (x + 3) * module, qr_y + (y + 3) * module);
               draw->AddRectFilled(corner, ImVec2(corner.x + module + 0.5f, corner.y + module + 0.5f),
-                                  IM_COL32(0, 0, 0, 255));
+                                  IM_COL32(0, 0, 0, int(255 * card)));
             }
           }
         }
       } catch (const std::exception&) {
         // (a link too long for a QR code: only its text)
       }
-      // A link is also written (not a PIX payload, too long to read).
-      if (shown.url.rfind("http", 0) == 0) {
-        ImGui::SetWindowFontScale(font_scale * 0.8f);
-        ImVec2 url_size = ImGui::CalcTextSize(shown.url.c_str(), nullptr, false, qr_size);
-        ImGui::SetCursorPos(ImVec2(qr_x + std::max(0.0f, (qr_size - url_size.x) / 2.0f),
-                                   qr_y + qr_size + 24.0f * scale));
-        ImGui::PushTextWrapPos(qr_x + qr_size);
-        ImGui::TextColored(kDimText, "%s", shown.url.c_str());
-        ImGui::PopTextWrapPos();
-      }
+      // What to do with it: a link is written, a PIX payload (too long to
+      // read) is to be scanned.
+      const bool link = shown.url.rfind("http", 0) == 0;
+      const std::string caption =
+          link ? shown.url
+               : (IsPortuguese() ? "Escaneie com o app do seu banco" : "Scan it with your bank's app");
+      ImGui::SetWindowFontScale(font_scale * 0.75f);
+      const ImVec2 caption_size = ImGui::CalcTextSize(caption.c_str(), nullptr, false, qr_size);
+      ImGui::SetCursorPos(ImVec2(qr_x + std::max(0.0f, (qr_size - caption_size.x) / 2.0f),
+                                 qr_y + qr_size + frame + 22.0f * scale));
+      ImGui::PushTextWrapPos(qr_x + qr_size);
+      ImGui::TextColored(WithAlpha(link ? kAccent : kDimText, card), "%s", caption.c_str());
+      ImGui::PopTextWrapPos();
     }
 
     ImGui::SetWindowFontScale(font_scale);
@@ -379,6 +449,7 @@ void SupportScreen::OnDraw(ImGuiIO& io) {
     if (font_) {
       ImGui::PopFont();
     }
+    FadeIn(display, appear);
   }
   ImGui::End();
   ImGui::PopStyleColor();
@@ -400,113 +471,185 @@ void DonorsScreen::OnDraw(ImGuiIO& io) {
   const int count = int(list.size());
   if (pressed & rex::input::X_INPUT_GAMEPAD_DPAD_UP) {
     selected_ = std::max(selected_ - 1, 0);
-    scroll_to_ = selected_;
   }
   if (pressed & rex::input::X_INPUT_GAMEPAD_DPAD_DOWN) {
     selected_ = std::max(std::min(selected_ + 1, count - 1), 0);
-    scroll_to_ = selected_;
   }
 
   const ImVec2 display = io.DisplaySize;
   const float scale = display.y / 1080.0f;
   const float font_scale = scale * kFontScaleAt1080;
   const bool portuguese = IsPortuguese();
+  const float t = ShownSeconds();
+  const float dt = std::clamp(io.DeltaTime, 0.0f, 0.1f);
+  const float appear = EaseOut(std::clamp(t / 0.7f, 0.0f, 1.0f));
+  const float pulse = 0.5f + 0.5f * std::sin(t * 3.2f);
 
   ImGui::SetNextWindowPos(ImVec2(0, 0), ImGuiCond_Always);
   ImGui::SetNextWindowSize(display, ImGuiCond_Always);
   ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
   ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
-  ImGui::PushStyleColor(ImGuiCol_WindowBg, IM_COL32(0, 0, 0, 0));
+  ImGui::PushStyleColor(ImGuiCol_WindowBg, IM_COL32(0, 0, 0, 255));
   constexpr ImGuiWindowFlags kFlags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
                                       ImGuiWindowFlags_NoSavedSettings |
                                       ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoInputs |
                                       ImGuiWindowFlags_NoBringToFrontOnFocus;
   if (ImGui::Begin("##grfs_donors", nullptr, kFlags)) {
     ImDrawList* window_draw = ImGui::GetWindowDrawList();
-    window_draw->AddRectFilledMultiColor(ImVec2(0, 0), display, kBackgroundTop, kBackgroundTop,
-                                         kBackgroundBottom, kBackgroundBottom);
+    DrawBackground(window_draw, display, t, scale, SkullShade::kAll);
     if (font_) {
       ImGui::PushFont(font_);
     }
     const float left = display.x * 0.12f;
     const float width = display.x * 0.76f;
+    const float top = 56.0f * scale;
+    const float slide = (1.0f - appear) * -60.0f * scale;
 
-    // The title, a thank you and the donors' number.
+    // The kicker, the title, a thank you; the donors' number, right.
+    ImGui::SetWindowFontScale(font_scale * 0.6f);
+    ImGui::SetCursorPos(ImVec2(left + slide * 0.5f, top));
+    ImGui::TextColored(WithAlpha(kAccent, appear), "%s",
+                       portuguese ? "QUEM MANTÉM O PROJETO VIVO" : "WHO KEEPS THE PROJECT ALIVE");
     if (title_font_) {
       ImGui::PushFont(title_font_);
     }
     ImGui::SetWindowFontScale(font_scale * 0.9f);
-    ImGui::SetCursorPos(ImVec2(left, 56.0f * scale));
-    ImGui::TextColored(kText, "%s", portuguese ? "Doadores" : "Donors");
+    ImGui::SetCursorPos(ImVec2(left + slide, ImGui::GetCursorPosY() + 4.0f * scale));
+    ImGui::TextColored(WithAlpha(kText, appear), "%s", portuguese ? "Doadores" : "Donors");
     if (title_font_) {
       ImGui::PopFont();
     }
-    ImGui::SetWindowFontScale(font_scale);
-    ImGui::SetCursorPosX(left);
-    ImGui::TextColored(kDimText, "%s",
+    ImGui::SetWindowFontScale(font_scale * 0.8f);
+    ImGui::SetCursorPosX(left + slide * 0.5f);
+    ImGui::TextColored(WithAlpha(kDimText, appear), "%s",
                        portuguese ? "Obrigado a todos que ajudam a manter o projeto ativo!"
                                   : "Thanks to everyone who helps keep the project active!");
-    ImGui::Dummy(ImVec2(0, 20.0f * scale));
+    if (count) {
+      ImGui::SetWindowFontScale(font_scale * 0.8f);
+      const std::string badge = std::to_string(count) +
+                                (portuguese ? (count == 1 ? " doador" : " doadores")
+                                            : (count == 1 ? " donor" : " donors"));
+      const float badge_h = 52.0f * scale;
+      const float badge_w = ImGui::CalcTextSize(badge.c_str()).x + 92.0f * scale;
+      const ImVec2 a(left + width - badge_w, top + 30.0f * scale);
+      window_draw->AddRectFilled(a, ImVec2(a.x + badge_w, a.y + badge_h),
+                                 IM_COL32(255, 255, 255, int(16 * appear)), badge_h / 2);
+      window_draw->AddRect(a, ImVec2(a.x + badge_w, a.y + badge_h),
+                           IM_COL32(240, 100, 130, int(120 * appear)), badge_h / 2, 0, 2.0f * scale);
+      DrawHeart(window_draw, ImVec2(a.x + 34.0f * scale, a.y + badge_h / 2), 26.0f * scale,
+                IM_COL32(240, 100, 130, int(255 * appear)));
+      window_draw->AddText(ImGui::GetFont(), ImGui::GetFontSize(),
+                           ImVec2(a.x + 62.0f * scale, a.y + (badge_h - ImGui::GetFontSize()) / 2),
+                           IM_COL32(255, 255, 255, int(255 * appear)), badge.c_str());
+    }
+    ImGui::Dummy(ImVec2(0, 26.0f * scale));
 
-    // The list, scrolled to the selected donor.
+    // The list, easing to the selected donor.
     const float footer = 100.0f * scale;
-    ImGui::SetCursorPosX(left);
-    ImGui::BeginChild("##donors", ImVec2(width, display.y - ImGui::GetCursorPosY() - footer),
-                      ImGuiChildFlags_None, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoNav);
+    const float list_top = ImGui::GetCursorPosY();
+    const float list_height = display.y - list_top - footer;
+    ImGui::SetCursorPos(ImVec2(left, list_top));
+    ImGui::BeginChild("##donors", ImVec2(width, list_height), ImGuiChildFlags_None,
+                      ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoNav);
     ImGui::SetWindowFontScale(font_scale);
     ImDrawList* draw = ImGui::GetWindowDrawList();
-    const float pad = 16.0f * scale, round = 10.0f * scale, edge = 3.0f * scale;
+    const float pad = 20.0f * scale, round = 10.0f * scale, edge = 3.0f * scale;
+    const float heart = 34.0f * scale;
     if (!count) {
       ImGui::SetCursorPos(ImVec2(pad, pad));
-      ImGui::TextColored(kDimText, "%s",
+      ImGui::TextColored(WithAlpha(kDimText, appear * (0.65f + 0.35f * pulse)), "%s",
                          portuguese ? "Nenhum doador ainda. Seja o primeiro!"
                                     : "No donors yet. Be the first!");
     }
+    float focus_top = 0.0f, focus_height = 0.0f;
     for (int i = 0; i < count; ++i) {
       const Donor& donor = list[i];
       const bool focused = i == selected_;
+      const float row_alpha =
+          EaseOut(std::clamp((t - 0.2f - 0.06f * std::min(i, 10)) / 0.4f, 0.0f, 1.0f));
+      const float shift = (1.0f - row_alpha) * 40.0f * scale;
       ImGui::PushID(i);
       ImGui::SetCursorPosX(edge);
-      const ImVec2 top = ImGui::GetCursorScreenPos();
+      const float row_y = ImGui::GetCursorPosY();
+      const ImVec2 top_left = ImGui::GetCursorScreenPos();
       const float row_width = width - edge * 2.0f;
-      const float text_width = row_width - pad * 2.0f;
+      const float text_x = top_left.x + pad + heart + 24.0f * scale + shift;
+      const float text_width = top_left.x + row_width - pad - text_x;
       const float name_height = ImGui::GetTextLineHeight();
+      ImGui::SetWindowFontScale(font_scale * 0.85f);
       const float message_height =
           donor.message.empty()
               ? 0.0f
               : ImGui::CalcTextSize(donor.message.c_str(), nullptr, false, text_width).y;
-      const float height = pad * 2.0f + name_height + (message_height ? message_height + 4.0f * scale : 0.0f);
-      const ImVec2 bottom(top.x + row_width, top.y + height);
-      draw->AddRectFilled(top, bottom,
-                          focused ? IM_COL32(255, 255, 255, 38) : IM_COL32(255, 255, 255, 14),
-                          round);
+      ImGui::SetWindowFontScale(font_scale);
+      const float height =
+          pad * 2.0f + name_height + (message_height ? message_height + 6.0f * scale : 0.0f);
+      const ImVec2 bottom(top_left.x + row_width, top_left.y + height);
       if (focused) {
-        draw->AddRect(ImVec2(top.x - edge, top.y - edge), ImVec2(bottom.x + edge, bottom.y + edge),
-                      IM_COL32(255, 255, 255, 235), round + edge, 0, edge);
+        focus_top = row_y;
+        focus_height = height;
       }
-      ImGui::SetCursorScreenPos(ImVec2(top.x + pad, top.y + pad));
-      ImGui::TextColored(kText, "%s", donor.name.c_str());
+      draw->AddRectFilled(top_left, bottom, IM_COL32(8, 14, 20, int(185 * row_alpha)), round);
+      draw->AddRectFilledMultiColor(top_left, ImVec2(top_left.x + row_width * 0.5f, bottom.y),
+                                    IM_COL32(240, 100, 130, int(30 * row_alpha)),
+                                    IM_COL32(240, 100, 130, 0), IM_COL32(240, 100, 130, 0),
+                                    IM_COL32(240, 100, 130, int(30 * row_alpha)));
+      draw->AddRectFilled(top_left, ImVec2(top_left.x + 6.0f * scale, bottom.y),
+                          IM_COL32(240, 100, 130, int(230 * row_alpha)), round,
+                          ImDrawFlags_RoundCornersLeft);
+      if (focused) {
+        draw->AddRectFilled(top_left, bottom, IM_COL32(255, 255, 255, 16), round);
+        draw->AddRect(ImVec2(top_left.x - edge * 0.5f, top_left.y - edge * 0.5f),
+                      ImVec2(bottom.x + edge * 0.5f, bottom.y + edge * 0.5f),
+                      IM_COL32(110, 210, 255, int(150 + 105 * pulse)), round + edge, 0, edge);
+      }
+      // The heart, beating on the selected donor.
+      const float beat = focused ? 1.0f + 0.12f * std::max(0.0f, std::sin(t * 6.0f)) : 1.0f;
+      DrawHeart(draw, ImVec2(top_left.x + pad + 8.0f * scale + heart / 2 + shift,
+                             top_left.y + pad + name_height / 2),
+                heart * beat, IM_COL32(240, 100, 130, int(255 * row_alpha)));
+      ImGui::SetCursorScreenPos(ImVec2(text_x, top_left.y + pad));
+      ImGui::TextColored(WithAlpha(kText, row_alpha), "%s", donor.name.c_str());
       if (!donor.message.empty()) {
-        ImGui::SetCursorScreenPos(ImVec2(top.x + pad, top.y + pad + name_height + 4.0f * scale));
+        ImGui::SetWindowFontScale(font_scale * 0.85f);
+        ImGui::SetCursorScreenPos(ImVec2(text_x, top_left.y + pad + name_height + 6.0f * scale));
         ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + text_width);
-        ImGui::TextColored(kDimText, "%s", donor.message.c_str());
+        ImGui::TextColored(WithAlpha(kDimText, row_alpha), "%s", donor.message.c_str());
         ImGui::PopTextWrapPos();
+        ImGui::SetWindowFontScale(font_scale);
       }
-      ImGui::SetCursorScreenPos(ImVec2(top.x, bottom.y + 10.0f * scale));
-      if (scroll_to_ == i) {
-        ImGui::SetScrollFromPosY(top.y - ImGui::GetWindowPos().y, 0.4f);
-        scroll_to_ = -1;
-      }
+      ImGui::SetCursorScreenPos(ImVec2(top_left.x, bottom.y + 10.0f * scale));
       ImGui::Dummy(ImVec2(0, 0));
       ImGui::PopID();
     }
+    {
+      const float max_scroll = ImGui::GetScrollMaxY();
+      const float target = std::clamp(focus_top + focus_height / 2 - list_height / 2, 0.0f,
+                                      std::max(max_scroll, 0.0f));
+      scroll_ += (target - scroll_) * std::min(1.0f, dt * 12.0f);
+      if (std::abs(target - scroll_) < 0.5f) {
+        scroll_ = target;
+      }
+      ImGui::SetScrollY(scroll_);
+    }
     ImGui::EndChild();
+    // The list fades out at its top and bottom edges.
+    {
+      const ImU32 opaque = IM_COL32(3, 8, 12, 200), clear = IM_COL32(3, 8, 12, 0);
+      const float fade = 28.0f * scale;
+      window_draw->AddRectFilledMultiColor(ImVec2(left, list_top), ImVec2(left + width, list_top + fade),
+                                           opaque, opaque, clear, clear);
+      window_draw->AddRectFilledMultiColor(ImVec2(left, list_top + list_height - fade),
+                                           ImVec2(left + width, list_top + list_height), clear,
+                                           clear, opaque, opaque);
+    }
 
     ImGui::SetWindowFontScale(font_scale);
     DrawBackHint(window_draw, display, scale);
     if (font_) {
       ImGui::PopFont();
     }
+    FadeIn(display, appear);
   }
   ImGui::End();
   ImGui::PopStyleColor();

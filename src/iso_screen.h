@@ -17,7 +17,18 @@
 
 #include "disc_image.h"
 
+struct ImDrawList;
 struct ImFont;
+struct ImVec2;
+
+// The game's skull art (assets/iso_background.png, built into the app), as
+// a texture, and drawn animated over the screen (`t` seconds since shown),
+// shaded under the text on the left or all over.
+std::unique_ptr<rex::ui::ImmediateTexture> CreateSkullTexture(
+    rex::ui::ImmediateDrawer* immediate_drawer, float& aspect);
+enum class SkullShade { kLeft, kAll };
+void DrawSkullBackground(ImDrawList* draw, rex::ui::ImmediateTexture* texture, float aspect,
+                         ImVec2 display, float t, float scale, SkullShade shade);
 
 class IsoScreen : public rex::ui::ImGuiDialog {
  public:

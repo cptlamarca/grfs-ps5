@@ -222,6 +222,14 @@ void GrfsApp::OnConfigureFonts(ImFontAtlas* atlas) {
   title_font_ = load("NotoSans-Bold.ttf", 88.0f);
 }
 
+rex::ui::ImmediateTexture* GrfsApp::SkullTexture(float& aspect) {
+  if (!skull_ && immediate_drawer()) {
+    skull_ = CreateSkullTexture(immediate_drawer(), skull_aspect_);
+  }
+  aspect = skull_aspect_;
+  return skull_.get();
+}
+
 void GrfsApp::ShowTrophies() {
   overlay_ = Overlay::kTrophies;
   SetAchievementsOverlayVisible(true);

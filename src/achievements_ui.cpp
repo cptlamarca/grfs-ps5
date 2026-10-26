@@ -19,6 +19,8 @@
 #include <rex/system/flags.h>
 
 #include "grfs_app.h"
+#include "iso_screen.h"
+#include "screen_style.h"
 #include "trophy_sound.h"
 
 namespace {
@@ -36,6 +38,10 @@ struct Texts {
   const char* scroll;
   const char* notification;
   const char* date_format;
+  const char* kicker;
+  const char* earned;
+  const char* locked;
+  const char* last;
 };
 
 const Texts& GetTexts() {
@@ -47,7 +53,11 @@ const Texts& GetTexts() {
                                  "Back",
                                  "Scroll",
                                  "You've earned a trophy.",
-                                 "%m/%d/%Y"};
+                                 "%m/%d/%Y",
+                                 "TROPHIES  //  GHOST RECON",
+                                 "EARNED",
+                                 "LOCKED",
+                                 "last earned"};
   static const Texts kPortuguese = {"Troféus",
                                     "Tom Clancy's Ghost Recon: Future Soldier",
                                     "%d/%d troféus",
@@ -56,7 +66,11 @@ const Texts& GetTexts() {
                                     "Voltar",
                                     "Rolar",
                                     "Você ganhou um troféu.",
-                                    "%d/%m/%Y"};
+                                    "%d/%m/%Y",
+                                    "TROFÉUS  //  GHOST RECON",
+                                    "CONQUISTADOS",
+                                    "BLOQUEADOS",
+                                    "último em"};
   return IsPortuguese() ? kPortuguese : kEnglish;
 }
 
@@ -74,17 +88,22 @@ constexpr ImU32 kGradeColors[] = {IM_COL32(205, 127, 72, 255), IM_COL32(196, 204
 constexpr ImU32 kGradeShades[] = {IM_COL32(128, 72, 38, 255), IM_COL32(120, 128, 140, 255),
                                   IM_COL32(170, 124, 30, 255), IM_COL32(98, 128, 170, 255)};
 
-constexpr ImU32 kBackgroundTop = IM_COL32(16, 30, 54, 255);
-constexpr ImU32 kBackgroundBottom = IM_COL32(4, 8, 16, 255);
-constexpr ImU32 kRow = IM_COL32(255, 255, 255, 14);
-constexpr ImU32 kRowFocused = IM_COL32(255, 255, 255, 38);
-constexpr ImU32 kFocusEdge = IM_COL32(255, 255, 255, 235);
-constexpr ImU32 kBarBack = IM_COL32(255, 255, 255, 40);
-constexpr ImU32 kBarFill = IM_COL32(255, 255, 255, 230);
 constexpr ImU32 kCard = IM_COL32(32, 34, 40, 242);
 constexpr ImVec4 kText = ImVec4(1.0f, 1.0f, 1.0f, 1.0f);
 constexpr ImVec4 kDimText = ImVec4(0.70f, 0.73f, 0.78f, 1.0f);
-constexpr ImVec4 kLockedText = ImVec4(0.55f, 0.58f, 0.63f, 1.0f);
+constexpr ImVec4 kLockedText = ImVec4(0.62f, 0.66f, 0.71f, 1.0f);
+
+
+// A padlock: its shackle and body, over a locked trophy's icon.
+void DrawPadlock(ImDrawList* draw, ImVec2 center, float size, ImU32 color) {
+  const float w = size * 0.5f, body_top = center.y - size * 0.05f;
+  draw->PathArcTo(ImVec2(center.x, body_top), w * 0.62f, 3.14159265f, 6.2831853f, 20);
+  draw->PathStroke(color, 0, size * 0.13f);
+  draw->AddRectFilled(ImVec2(center.x - w, body_top), ImVec2(center.x + w, center.y + size * 0.55f),
+                      color, size * 0.08f);
+  draw->AddCircleFilled(ImVec2(center.x, body_top + size * 0.25f), size * 0.08f,
+                        IM_COL32(20, 24, 32, 255), 12);
+}
 
 // A trophy cup: a bowl with handles on a stem and a base.
 void DrawTrophy(ImDrawList* draw, ImVec2 center, float size, Grade grade, bool earned = true) {
@@ -161,7 +180,9 @@ AchievementsScreen::AchievementsScreen(rex::ReXApp* app, rex::ui::ImGuiDrawer* i
       achievements_(achievements),
       icon_cache_(immediate_drawer, runtime),
       font_(font),
-      title_font_(title_font) {}
+      title_font_(title_font) {
+  background_ = CreateSkullTexture(immediate_drawer, background_aspect_);
+}
 
 uint16_t AchievementsScreen::PollPad() {
   auto* input = static_cast<rex::input::InputSystem*>(runtime_->input_system());
@@ -200,8 +221,6 @@ uint16_t AchievementsScreen::PollPad() {
 void AchievementsScreen::OnDraw(ImGuiIO& io) {
   const Texts& texts = GetTexts();
   const auto list = achievements_->ListAchievements();
-  // The platinum trophy comes first, then the achievements.
-  const int count = int(list.size()) + 1;
 
   uint16_t pressed = PollPad();
   if (pressed == 0xFFFF) {
@@ -212,17 +231,10 @@ void AchievementsScreen::OnDraw(ImGuiIO& io) {
   if (pressed & (rex::input::X_INPUT_GAMEPAD_B | rex::input::X_INPUT_GAMEPAD_BACK)) {
     closing_ = true;
   }
-  if (pressed & rex::input::X_INPUT_GAMEPAD_DPAD_UP) {
-    selected_ = std::max(selected_ - 1, 0);
-    scroll_to_ = selected_;
-  }
-  if (pressed & rex::input::X_INPUT_GAMEPAD_DPAD_DOWN) {
-    selected_ = std::min(selected_ + 1, count - 1);
-    scroll_to_ = selected_;
-  }
 
   int earned_count[4] = {}, total_count[4] = {};
   int earned_points = 0, total_points = 0;
+  uint64_t last_unlock = 0;
   for (const auto& achievement : list) {
     Grade grade = GradeOf(achievement.gamerscore);
     ++total_count[grade];
@@ -230,6 +242,7 @@ void AchievementsScreen::OnDraw(ImGuiIO& io) {
     if (achievements_->IsUnlocked(achievement.id)) {
       ++earned_count[grade];
       earned_points += kGradePoints[grade];
+      last_unlock = std::max(last_unlock, achievements_->GetUnlockTime(achievement.id));
     }
   }
   const bool platinum =
@@ -243,107 +256,205 @@ void AchievementsScreen::OnDraw(ImGuiIO& io) {
   const int earned_total =
       earned_count[kBronze] + earned_count[kSilver] + earned_count[kGold] + platinum;
 
+  // The trophies earned first, the latest on top (the platinum above them
+  // all), then those still locked (the platinum first).
+  struct Entry {
+    const rex::system::AchievementInfo* achievement;  // null: the platinum
+    bool earned;
+    Grade grade;
+    uint64_t time;
+  };
+  std::vector<Entry> entries;
+  entries.push_back({nullptr, platinum, kPlatinum, platinum ? ~uint64_t(0) : 0});
+  for (const auto& achievement : list) {
+    const bool earned = achievements_->IsUnlocked(achievement.id);
+    entries.push_back({&achievement, earned, GradeOf(achievement.gamerscore),
+                       earned ? achievements_->GetUnlockTime(achievement.id) : 0});
+  }
+  std::stable_sort(entries.begin(), entries.end(), [](const Entry& a, const Entry& b) {
+    if (a.earned != b.earned) {
+      return a.earned;
+    }
+    return a.earned && a.time > b.time;
+  });
+  const int count = int(entries.size());
+  if (pressed & rex::input::X_INPUT_GAMEPAD_DPAD_UP) {
+    selected_ = std::max(selected_ - 1, 0);
+  }
+  if (pressed & rex::input::X_INPUT_GAMEPAD_DPAD_DOWN) {
+    selected_ = std::min(selected_ + 1, count - 1);
+  }
+
   const ImVec2 display = io.DisplaySize;
   const float scale = display.y / 1080.0f;
   const float font_scale = scale * kFontScaleAt1080;
+  const double now = ImGui::GetTime();
+  const float dt = std::clamp(io.DeltaTime, 0.0f, 0.1f);
+  if (shown_at_ < 0.0) {
+    shown_at_ = now;
+  }
+  const float t = float(now - shown_at_);
+  const float appear = EaseOut(std::clamp(t / 0.6f, 0.0f, 1.0f));
+  const float ring_fill = EaseOut(std::clamp((t - 0.2f) / 1.2f, 0.0f, 1.0f));
 
   ImGui::SetNextWindowPos(ImVec2(0, 0), ImGuiCond_Always);
   ImGui::SetNextWindowSize(display, ImGuiCond_Always);
   ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
   ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
   ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(12.0f * scale, 6.0f * scale));
-  ImGui::PushStyleColor(ImGuiCol_WindowBg, IM_COL32(0, 0, 0, 0));
+  ImGui::PushStyleColor(ImGuiCol_WindowBg, IM_COL32(0, 0, 0, 255));
   constexpr ImGuiWindowFlags kFlags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
                                       ImGuiWindowFlags_NoSavedSettings |
                                       ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoInputs |
                                       ImGuiWindowFlags_NoBringToFrontOnFocus;
   if (ImGui::Begin("##grfs_trophies", nullptr, kFlags)) {
     ImDrawList* window_draw = ImGui::GetWindowDrawList();
-    window_draw->AddRectFilledMultiColor(ImVec2(0, 0), display, kBackgroundTop, kBackgroundTop,
-                                         kBackgroundBottom, kBackgroundBottom);
+    DrawSkullBackground(window_draw, background_.get(), background_aspect_, display, t, scale,
+                        SkullShade::kAll);
     if (font_) {
       ImGui::PushFont(font_);
     }
     ImGui::SetWindowFontScale(font_scale);
 
-    const float left = display.x * 0.12f;
-    const float width = display.x * 0.76f;
+    const float left = display.x * 0.10f;
+    const float width = display.x * 0.80f;
+    const float slide = (1.0f - appear) * -60.0f * scale;
 
-    // Header: the screen, the game, its progress and the trophy counts.
-    ImGui::SetCursorPos(ImVec2(left, 56.0f * scale));
-    ImGui::TextColored(kDimText, "%s", texts.title);
-    ImGui::SetCursorPosX(left);
+    // Header: the progress ring, the screen and the game, the trophy counts.
+    const float top = 56.0f * scale;
+    const float ring_radius = 62.0f * scale;
+    const ImVec2 ring(left + ring_radius + slide, top + ring_radius + 8.0f * scale);
+    {
+      const float thickness = 12.0f * scale;
+      window_draw->AddCircle(ring, ring_radius, IM_COL32(255, 255, 255, int(40 * appear)), 64,
+                             thickness);
+      const float fraction = percent / 100.0f * ring_fill;
+      if (fraction > 0.0f) {
+        const float start = -1.5707963f;
+        window_draw->PathArcTo(ring, ring_radius, start, start + fraction * 6.2831853f, 64);
+        window_draw->PathStroke(IM_COL32(90, 200, 255, int(255 * appear)), 0, thickness);
+        // A soft glow at the arc's end.
+        const float end = start + fraction * 6.2831853f;
+        const ImVec2 tip(ring.x + std::cos(end) * ring_radius, ring.y + std::sin(end) * ring_radius);
+        window_draw->AddCircleFilled(tip, thickness * 1.2f, IM_COL32(120, 220, 255, int(60 * appear)),
+                                     24);
+      }
+      char text[16];
+      std::snprintf(text, sizeof(text), "%d%%", int(percent * ring_fill + 0.5f));
+      ImFont* font = title_font_ ? title_font_ : ImGui::GetFont();
+      const float size = (title_font_ ? title_font_->LegacySize : ImGui::GetFontSize()) * font_scale *
+                         0.62f;
+      const ImVec2 extent = font->CalcTextSizeA(size, FLT_MAX, 0.0f, text);
+      window_draw->AddText(font, size, ImVec2(ring.x - extent.x / 2, ring.y - extent.y / 2),
+                           IM_COL32(255, 255, 255, int(255 * appear)), text);
+    }
+    const float header_x = ring.x + ring_radius + 36.0f * scale;
+    ImGui::SetCursorPos(ImVec2(header_x + slide * 0.5f, top + 6.0f * scale));
+    ImGui::SetWindowFontScale(font_scale * 0.7f);
+    ImGui::TextColored(WithAlpha(kAccent, appear), "%s", texts.kicker);
     if (title_font_) {
       ImGui::PushFont(title_font_);
     }
     ImGui::SetWindowFontScale(font_scale * 0.72f);
-    ImGui::TextColored(kText, "%s", texts.game);
-    ImGui::SetWindowFontScale(font_scale);
-
-    ImGui::SetCursorPosX(left);
-    const ImVec2 header = ImGui::GetCursorScreenPos();
-    ImGui::TextColored(kText, "%d%%", percent);
+    ImGui::SetCursorPosX(header_x + slide);
+    ImGui::TextColored(WithAlpha(kText, appear), "%s", texts.game);
     if (title_font_) {
       ImGui::PopFont();
     }
-    ImGui::SetWindowFontScale(font_scale);
-    const float bar_x = header.x + 150.0f * scale, bar_y = header.y + 20.0f * scale;
-    const float bar_w = 360.0f * scale, bar_h = 6.0f * scale;
-    window_draw->AddRectFilled(ImVec2(bar_x, bar_y), ImVec2(bar_x + bar_w, bar_y + bar_h),
-                               kBarBack, bar_h);
-    window_draw->AddRectFilled(ImVec2(bar_x, bar_y),
-                               ImVec2(bar_x + bar_w * percent / 100.0f, bar_y + bar_h), kBarFill,
-                               bar_h);
+    ImGui::SetWindowFontScale(font_scale * 0.8f);
+    ImGui::SetCursorPosX(header_x + slide * 0.5f);
     char earned_text[64];
     std::snprintf(earned_text, sizeof(earned_text), texts.earned_format, earned_total, count);
-    window_draw->AddText(ImGui::GetFont(), ImGui::GetFontSize(),
-                         ImVec2(bar_x, bar_y + 14.0f * scale), ImGui::GetColorU32(kDimText),
-                         earned_text);
-    float counts_x = left + width;
-    for (int grade = kBronze; grade <= kPlatinum; ++grade) {
-      std::string text = std::to_string(earned_count[grade]);
-      counts_x -= ImGui::CalcTextSize(text.c_str()).x;
-      window_draw->AddText(ImGui::GetFont(), ImGui::GetFontSize(),
-                           ImVec2(counts_x, header.y + 8.0f * scale), ImGui::GetColorU32(kText),
-                           text.c_str());
-      counts_x -= 30.0f * scale;
-      DrawTrophy(window_draw, ImVec2(counts_x + 12.0f * scale, header.y + 26.0f * scale),
-                 32.0f * scale, Grade(grade));
-      counts_x -= 40.0f * scale;
+    std::string summary = earned_text;
+    if (last_unlock) {
+      summary += "   ·   " + std::string(texts.last) + " " +
+                 FormatDate(last_unlock, texts.date_format);
     }
-    ImGui::Dummy(ImVec2(0, 20.0f * scale));
+    ImGui::TextColored(WithAlpha(kDimText, appear), "%s", summary.c_str());
 
-    // The trophy list.
+    // The counts, right: a badge per grade.
+    {
+      float x = left + width;
+      const float badge_h = 52.0f * scale, badge_y = ring.y - badge_h / 2;
+      for (int grade = kPlatinum; grade >= kBronze; --grade) {
+        const std::string text =
+            std::to_string(earned_count[grade]) + "/" + std::to_string(total_count[grade]);
+        const float text_w = ImGui::CalcTextSize(text.c_str()).x;
+        const float badge_w = text_w + 76.0f * scale;
+        x -= badge_w;
+        const float a = EaseOut(std::clamp((t - 0.15f - 0.08f * (kPlatinum - grade)) / 0.4f, 0.0f, 1.0f));
+        const ImU32 color = kGradeColors[grade];
+        window_draw->AddRectFilled(ImVec2(x, badge_y), ImVec2(x + badge_w, badge_y + badge_h),
+                                   IM_COL32(255, 255, 255, int(16 * a)), badge_h / 2);
+        window_draw->AddRect(ImVec2(x, badge_y), ImVec2(x + badge_w, badge_y + badge_h),
+                             (color & 0x00FFFFFF) | (ImU32(int(110 * a)) << 24), badge_h / 2, 0,
+                             2.0f * scale);
+        DrawTrophy(window_draw, ImVec2(x + 30.0f * scale, badge_y + badge_h / 2), 30.0f * scale,
+                   Grade(grade), earned_count[grade] > 0);
+        window_draw->AddText(ImGui::GetFont(), ImGui::GetFontSize(),
+                             ImVec2(x + 54.0f * scale, badge_y + (badge_h - ImGui::GetFontSize()) / 2),
+                             IM_COL32(255, 255, 255, int(255 * a)), text.c_str());
+        x -= 14.0f * scale;
+      }
+    }
+
+    // The list.
+    const float list_top = ring.y + ring_radius + 36.0f * scale;
     const float footer = 90.0f * scale;
-    ImGui::SetCursorPosX(left);
-    ImGui::BeginChild("##list", ImVec2(width, display.y - ImGui::GetCursorPosY() - footer),
-                      ImGuiChildFlags_None, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoNav);
+    const float list_height = display.y - list_top - footer;
+    ImGui::SetCursorPos(ImVec2(left, list_top));
+    ImGui::BeginChild("##list", ImVec2(width, list_height), ImGuiChildFlags_None,
+                      ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoNav);
     ImGui::SetWindowFontScale(font_scale);
     ImDrawList* draw = ImGui::GetWindowDrawList();
-    const float icon = 88.0f * scale, pad = 16.0f * scale, round = 10.0f * scale;
+    const float icon = 88.0f * scale, pad = 18.0f * scale, round = 10.0f * scale;
     const float edge = 3.0f * scale;
+    const float pulse = 0.5f + 0.5f * std::sin(t * 3.2f);
+    float focus_top = 0.0f, focus_height = 0.0f;
+    int shown_earned = earned_total, shown_locked = count - earned_total;
     for (int i = 0; i < count; ++i) {
-      const bool is_platinum = i == 0;
-      const rex::system::AchievementInfo* achievement = is_platinum ? nullptr : &list[i - 1];
-      const bool earned = is_platinum ? platinum : achievements_->IsUnlocked(achievement->id);
-      const Grade grade = is_platinum ? kPlatinum : GradeOf(achievement->gamerscore);
+      const Entry& entry = entries[i];
+      const bool is_platinum = entry.achievement == nullptr;
+      const bool earned = entry.earned;
+      const Grade grade = entry.grade;
       const bool focused = i == selected_;
+      const float row_alpha =
+          EaseOut(std::clamp((t - 0.25f - 0.05f * std::min(i, 10)) / 0.4f, 0.0f, 1.0f));
+
+      // A section's title before its first trophy.
+      if (i == 0 || entries[i - 1].earned != earned) {
+        ImGui::Dummy(ImVec2(0, (i == 0 ? 2.0f : 22.0f) * scale));
+        ImGui::SetCursorPosX(edge);
+        ImGui::SetWindowFontScale(font_scale * 0.65f);
+        char section[64];
+        std::snprintf(section, sizeof(section), "%s  (%d)", earned ? texts.earned : texts.locked,
+                      earned ? shown_earned : shown_locked);
+        ImGui::TextColored(WithAlpha(earned ? kAccent : kDimText, row_alpha), "%s", section);
+        const ImVec2 rule = ImGui::GetCursorScreenPos();
+        draw->AddRectFilled(ImVec2(rule.x + edge, rule.y + 2.0f * scale),
+                            ImVec2(rule.x + width - edge * 2, rule.y + 3.0f * scale),
+                            IM_COL32(255, 255, 255, int(30 * row_alpha)));
+        ImGui::Dummy(ImVec2(0, 10.0f * scale));
+        ImGui::SetWindowFontScale(font_scale);
+      }
 
       ImGui::PushID(i);
       ImGui::SetCursorPosX(edge);
       const ImVec2 row = ImGui::GetCursorScreenPos();
+      const float row_y = ImGui::GetCursorPosY();
       const float row_width = width - edge * 2.0f;
-      const float text_x = row.x + pad + icon + 24.0f * scale;
+      const float shift = (1.0f - row_alpha) * 40.0f * scale;
+      const float text_x = row.x + pad + icon + 26.0f * scale + shift;
       const float right = row.x + row_width - pad;
-      const float grade_column = 150.0f * scale;
+      const float grade_column = 160.0f * scale;
       const float wrap = right - grade_column - text_x;
 
-      const std::string name = is_platinum ? texts.game : achievement->label;
+      const std::string name = is_platinum ? texts.game : entry.achievement->label;
       const std::string description =
           is_platinum ? texts.platinum_description
-                      : (earned || achievement->unachieved_description.empty()
-                             ? achievement->description
-                             : achievement->unachieved_description);
+                      : (earned || entry.achievement->unachieved_description.empty()
+                             ? entry.achievement->description
+                             : entry.achievement->unachieved_description);
       ImGui::SetWindowFontScale(font_scale * 0.85f);
       const float description_size = ImGui::GetFontSize();
       const float description_height =
@@ -354,36 +465,69 @@ void AchievementsScreen::OnDraw(ImGuiIO& io) {
       const float text_height = name_size * 1.35f + description_height;
       const float row_height = std::max(icon, text_height) + pad * 2.0f;
       const ImVec2 row_end(row.x + row_width, row.y + row_height);
-
-      draw->AddRectFilled(row, row_end, focused ? kRowFocused : kRow, round);
       if (focused) {
-        draw->AddRect(ImVec2(row.x - edge * 0.5f, row.y - edge * 0.5f),
-                      ImVec2(row_end.x + edge * 0.5f, row_end.y + edge * 0.5f), kFocusEdge,
-                      round + edge, 0, edge);
+        focus_top = row_y;
+        focus_height = row_height;
       }
 
-      // Icon: the achievement's own, dimmed while locked; the platinum's cup.
-      const ImVec2 icon_min(row.x + pad, row.y + (row_height - icon) * 0.5f);
+      // The row: earned ones tinted with their grade's colour from the left.
+      const ImU32 grade_color = kGradeColors[grade];
+      const auto tint = [&](int alpha) {
+        return (grade_color & 0x00FFFFFF) | (ImU32(std::clamp(alpha, 0, 255)) << 24);
+      };
+      draw->AddRectFilled(row, row_end,
+                          IM_COL32(8, 14, 20, int((earned ? 190 : 150) * row_alpha)), round);
+      if (earned) {
+        draw->AddRectFilledMultiColor(row, ImVec2(row.x + row_width * 0.55f, row_end.y),
+                                      tint(int(55 * row_alpha)), tint(0), tint(0),
+                                      tint(int(55 * row_alpha)));
+        draw->AddRectFilled(row, ImVec2(row.x + 6.0f * scale, row_end.y), tint(int(255 * row_alpha)),
+                            round, ImDrawFlags_RoundCornersLeft);
+      }
+      if (focused) {
+        draw->AddRectFilled(row, row_end, IM_COL32(255, 255, 255, 16), round);
+        draw->AddRect(ImVec2(row.x - edge * 0.5f, row.y - edge * 0.5f),
+                      ImVec2(row_end.x + edge * 0.5f, row_end.y + edge * 0.5f),
+                      IM_COL32(110, 210, 255, int(150 + 105 * pulse)), round + edge, 0, edge);
+      }
+
+      // Icon: the achievement's own, dimmed with a padlock while locked; the
+      // platinum's cup.
+      const ImVec2 icon_min(row.x + pad + 8.0f * scale + shift, row.y + (row_height - icon) * 0.5f);
       const ImVec2 icon_max(icon_min.x + icon, icon_min.y + icon);
+      const ImVec2 icon_center((icon_min.x + icon_max.x) / 2, (icon_min.y + icon_max.y) / 2);
+      if (earned) {
+        // A soft halo of its grade's colour, breathing.
+        for (int ring_i = 3; ring_i >= 1; --ring_i) {
+          draw->AddCircleFilled(icon_center, icon * (0.50f + 0.09f * ring_i) * (0.97f + 0.06f * pulse),
+                                tint(int(14 * row_alpha)), 40);
+        }
+      }
       if (is_platinum) {
-        draw->AddRectFilled(icon_min, icon_max, IM_COL32(255, 255, 255, 18), 8.0f * scale);
-        DrawTrophy(draw, ImVec2(icon_min.x + icon * 0.5f, icon_min.y + icon * 0.5f), icon * 0.7f,
-                   kPlatinum, earned);
-      } else if (rex::ui::ImmediateTexture* texture = icon_cache_.GetIcon(*achievement)) {
+        draw->AddRectFilled(icon_min, icon_max, IM_COL32(255, 255, 255, int(18 * row_alpha)),
+                            8.0f * scale);
+        DrawTrophy(draw, icon_center, icon * 0.7f, kPlatinum, earned);
+      } else if (rex::ui::ImmediateTexture* texture = icon_cache_.GetIcon(*entry.achievement)) {
         draw->AddImageRounded(reinterpret_cast<ImTextureID>(texture), icon_min, icon_max,
                               ImVec2(0, 0), ImVec2(1, 1),
-                              earned ? IM_COL32_WHITE : IM_COL32(110, 110, 120, 200),
+                              earned ? IM_COL32(255, 255, 255, int(255 * row_alpha))
+                                     : IM_COL32(90, 95, 105, int(170 * row_alpha)),
                               8.0f * scale);
+      }
+      if (!earned) {
+        DrawPadlock(draw, icon_center, icon * 0.34f, IM_COL32(230, 235, 240, int(220 * row_alpha)));
       }
 
       // Name and description.
       const float text_y = row.y + (row_height - text_height) * 0.5f;
       draw->AddText(title_font_ ? title_font_ : ImGui::GetFont(), name_size,
-                    ImVec2(text_x, text_y), ImGui::GetColorU32(earned ? kText : kLockedText),
+                    ImVec2(text_x, text_y),
+                    ImGui::GetColorU32(WithAlpha(earned ? kText : kLockedText, row_alpha)),
                     name.c_str());
       draw->AddText(ImGui::GetFont(), description_size,
-                    ImVec2(text_x, text_y + name_size * 1.35f), ImGui::GetColorU32(kDimText),
-                    description.c_str(), nullptr, wrap);
+                    ImVec2(text_x, text_y + name_size * 1.35f),
+                    ImGui::GetColorU32(WithAlpha(kDimText, row_alpha)), description.c_str(),
+                    nullptr, wrap);
 
       // Grade, and the date it was earned.
       const float grade_x = right - grade_column * 0.5f;
@@ -391,24 +535,42 @@ void AchievementsScreen::OnDraw(ImGuiIO& io) {
                  grade, earned);
       std::string detail =
           earned && !is_platinum
-              ? FormatDate(achievements_->GetUnlockTime(achievement->id), texts.date_format)
+              ? FormatDate(entry.time, texts.date_format)
               : std::string(texts.grades[grade]);
       const float detail_size = ImGui::GetFontSize() * 0.75f;
       const float detail_width =
           ImGui::GetFont()->CalcTextSizeA(detail_size, FLT_MAX, 0.0f, detail.c_str()).x;
       draw->AddText(ImGui::GetFont(), detail_size,
                     ImVec2(grade_x - detail_width * 0.5f, row.y + row_height * 0.5f + 16.0f * scale),
-                    ImGui::GetColorU32(kDimText), detail.c_str());
+                    ImGui::GetColorU32(WithAlpha(earned ? kText : kDimText, row_alpha)),
+                    detail.c_str());
 
       ImGui::Dummy(ImVec2(row_width, row_height));
-      if (scroll_to_ == i) {
-        ImGui::SetScrollHereY(0.5f);
-        scroll_to_ = -1;
-      }
       ImGui::Dummy(ImVec2(0, 4.0f * scale));
       ImGui::PopID();
     }
+    // Smooth scrolling to keep the focused trophy in the middle.
+    {
+      const float max_scroll = ImGui::GetScrollMaxY();
+      const float target =
+          std::clamp(focus_top + focus_height / 2 - list_height / 2, 0.0f, std::max(max_scroll, 0.0f));
+      scroll_ += (target - scroll_) * std::min(1.0f, dt * 12.0f);
+      if (std::abs(target - scroll_) < 0.5f) {
+        scroll_ = target;
+      }
+      ImGui::SetScrollY(scroll_);
+    }
     ImGui::EndChild();
+    // The list fades out at its top and bottom edges.
+    {
+      const ImU32 opaque = IM_COL32(3, 8, 12, 200), clear = IM_COL32(3, 8, 12, 0);
+      const float fade = 28.0f * scale;
+      window_draw->AddRectFilledMultiColor(ImVec2(left, list_top), ImVec2(left + width, list_top + fade),
+                                           opaque, opaque, clear, clear);
+      window_draw->AddRectFilledMultiColor(ImVec2(left, list_top + list_height - fade),
+                                           ImVec2(left + width, list_top + list_height), clear, clear,
+                                           opaque, opaque);
+    }
 
     // Button hints, bottom right.
     ImGui::SetWindowFontScale(font_scale * 0.9f);
@@ -419,7 +581,7 @@ void AchievementsScreen::OnDraw(ImGuiIO& io) {
       x -= ImGui::CalcTextSize(label).x;
       window_draw->AddText(ImGui::GetFont(), ImGui::GetFontSize(),
                            ImVec2(x, hint_y - ImGui::GetFontSize() * 0.55f),
-                           ImGui::GetColorU32(kText), label);
+                           ImGui::GetColorU32(WithAlpha(kText, appear)), label);
       x -= glyph + 12.0f * scale;
       if (circle) {
         DrawCircleButton(window_draw, ImVec2(x, hint_y), glyph);
@@ -433,6 +595,11 @@ void AchievementsScreen::OnDraw(ImGuiIO& io) {
 
     if (font_) {
       ImGui::PopFont();
+    }
+    // Fading in from black.
+    if (appear < 1.0f) {
+      ImGui::GetForegroundDrawList()->AddRectFilled(ImVec2(0, 0), display,
+                                                    IM_COL32(0, 0, 0, int(200 * (1.0f - appear))));
     }
   }
   ImGui::End();
