@@ -8,11 +8,19 @@
 
 #include "disc_image.h"
 
+#include <fcntl.h>
+#include <unistd.h>
+
 #include <algorithm>
 #include <cctype>
+#include <cerrno>
+#include <chrono>
+#include <condition_variable>
 #include <cstring>
 #include <fstream>
+#include <mutex>
 #include <set>
+#include <thread>
 
 namespace {
 
@@ -153,13 +161,73 @@ const DiscFile* FindRootFile(const std::vector<DiscFile>& files, const std::stri
   return nullptr;
 }
 
+namespace {
+
+// A file descriptor, closed on scope exit.
+struct Fd {
+  int fd = -1;
+  explicit Fd(int value) : fd(value) {}
+  ~Fd() {
+    if (fd >= 0) {
+      close(fd);
+    }
+  }
+  Fd(const Fd&) = delete;
+  Fd& operator=(const Fd&) = delete;
+};
+
+bool WriteAll(int fd, const char* data, size_t size) {
+  while (size) {
+    ssize_t written = write(fd, data, size);
+    if (written <= 0) {
+      if (written < 0 && errno == EINTR) {
+        continue;
+      }
+      return false;
+    }
+    data += written;
+    size -= size_t(written);
+  }
+  return true;
+}
+
+bool ReadAll(int fd, char* data, size_t size, uint64_t offset) {
+  while (size) {
+    ssize_t read = pread(fd, data, size, off_t(offset));
+    if (read <= 0) {
+      if (read < 0 && errno == EINTR) {
+        continue;
+      }
+      return false;
+    }
+    data += read;
+    size -= size_t(read);
+    offset += uint64_t(read);
+  }
+  return true;
+}
+
+// Drops a file's pages from the cache (size 0: to its end), where the
+// system has posix_fadvise (the PS5's C library doesn't).
+void DropFromCache(int fd, uint64_t offset, uint64_t size) {
+#if defined(__PROSPERO__)
+  (void)fd, (void)offset, (void)size;
+#else
+  posix_fadvise(fd, off_t(offset), off_t(size), POSIX_FADV_DONTNEED);
+#endif
+}
+
+}  // namespace
+
+// Plain system calls (the PS5's C++ streams move a few MB a second), the
+// image read ahead on a thread while the files are written.
 bool ExtractDiscImage(const std::filesystem::path& image, const std::vector<DiscFile>& files,
                       const std::filesystem::path& folder, const std::string& last,
                       ExtractProgress& progress,
                       const std::function<void(const std::string&)>& on_file,
                       std::string& error) {
-  std::ifstream in(image, std::ios::binary);
-  if (!in) {
+  Fd in(open(image.c_str(), O_RDONLY));
+  if (in.fd < 0) {
     error = "can't open " + image.string();
     return false;
   }
@@ -177,55 +245,135 @@ bool ExtractDiscImage(const std::filesystem::path& image, const std::vector<Disc
     // An earlier, interrupted extraction's: it would say this one is whole.
     std::filesystem::remove(folder / last_file->path, ec);
   }
-  std::vector<char> buffer(8u << 20);
+
+  // The chunks to copy, in order: each file's data in pieces of kChunk.
+  constexpr size_t kChunk = 8u << 20, kBuffers = 4;
+  constexpr uint64_t kFlushEvery = 64u << 20;
+  struct Chunk {
+    uint64_t offset;
+    size_t size;
+  };
+  struct Slot {
+    std::vector<char> data = std::vector<char>(kChunk);
+    size_t size = 0;
+    bool ok = false;
+  };
+  std::vector<Slot> slots(kBuffers);
+  std::mutex mutex;
+  std::condition_variable changed;
+  uint64_t produced = 0, consumed = 0;  // chunks read, written
+  bool stop = false;
+  std::vector<Chunk> chunks;
+  for (const DiscFile* file : order) {
+    for (uint64_t at = 0; !file->directory && at < file->size; at += kChunk) {
+      chunks.push_back({file->offset + at, size_t(std::min<uint64_t>(kChunk, file->size - at))});
+    }
+  }
+  std::thread reader([&] {
+    for (uint64_t i = 0; i < chunks.size(); ++i) {
+      {
+        std::unique_lock<std::mutex> lock(mutex);
+        changed.wait(lock, [&] { return stop || i - consumed < kBuffers; });
+        if (stop) {
+          return;
+        }
+      }
+      Slot& slot = slots[i % kBuffers];
+      slot.size = chunks[i].size;
+      const auto start = std::chrono::steady_clock::now();
+      slot.ok = ReadAll(in.fd, slot.data.data(), chunks[i].size, chunks[i].offset);
+      // (read once: out of the cache, which the files' writes need)
+      DropFromCache(in.fd, chunks[i].offset, chunks[i].size);
+      progress.read_ns += uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                       std::chrono::steady_clock::now() - start)
+                                       .count());
+      {
+        std::lock_guard<std::mutex> lock(mutex);
+        produced = i + 1;
+      }
+      changed.notify_all();
+    }
+  });
+  auto finish = [&](bool ok) {
+    {
+      std::lock_guard<std::mutex> lock(mutex);
+      stop = true;
+    }
+    changed.notify_all();
+    reader.join();
+    return ok;
+  };
+
+  uint64_t next = 0;
   for (const DiscFile* file : order) {
     if (progress.cancel) {
       error = "cancelled";
-      return false;
+      return finish(false);
     }
     const std::filesystem::path target = folder / std::filesystem::path(file->path);
     if (file->directory) {
       std::filesystem::create_directories(target, ec);
       if (ec) {
         error = "can't create " + target.string() + ": " + ec.message();
-        return false;
+        return finish(false);
       }
       continue;
     }
     on_file(file->path);
-    std::ofstream out(target, std::ios::binary | std::ios::trunc);
-    if (!out) {
-      error = "can't write " + target.string();
-      return false;
+    Fd out(open(target.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0666));
+    uint64_t unflushed = 0;
+    if (out.fd < 0) {
+      error = "can't write " + target.string() + ": " + std::strerror(errno);
+      return finish(false);
     }
-    in.clear();
-    in.seekg(std::streamoff(file->offset));
     for (uint64_t left = file->size; left;) {
       if (progress.cancel) {
-        out.close();
+        close(out.fd);
+        out.fd = -1;
         std::filesystem::remove(target, ec);
         error = "cancelled";
-        return false;
+        return finish(false);
       }
-      size_t chunk = size_t(std::min<uint64_t>(left, buffer.size()));
-      in.read(buffer.data(), std::streamsize(chunk));
-      if (in.gcount() != std::streamsize(chunk)) {
+      {
+        std::unique_lock<std::mutex> lock(mutex);
+        changed.wait(lock, [&] { return produced > next; });
+      }
+      Slot& slot = slots[next % kBuffers];
+      if (!slot.ok) {
         error = "can't read " + file->path + " from the image";
-        return false;
+        return finish(false);
       }
-      out.write(buffer.data(), std::streamsize(chunk));
-      if (!out) {
-        error = "can't write " + target.string() + " (is the storage full?)";
-        return false;
+      const auto start = std::chrono::steady_clock::now();
+      const bool written = WriteAll(out.fd, slot.data.data(), slot.size);
+      progress.write_ns += uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                        std::chrono::steady_clock::now() - start)
+                                        .count());
+      if (!written) {
+        error = "can't write " + target.string() + ": " + std::strerror(errno);
+        return finish(false);
       }
-      left -= chunk;
-      progress.done += chunk;
+      left -= slot.size;
+      progress.done += slot.size;
+      // Written out every 64 MB: on the PS5, a full cache of waiting
+      // writes slows them to a few MB a second.
+      unflushed += slot.size;
+      if (unflushed >= kFlushEvery || !left) {
+        fsync(out.fd);
+        DropFromCache(out.fd, 0, 0);
+        unflushed = 0;
+      }
+      {
+        std::lock_guard<std::mutex> lock(mutex);
+        consumed = ++next;
+      }
+      changed.notify_all();
     }
-    out.close();
-    if (!out) {
-      error = "can't write " + target.string() + " (is the storage full?)";
-      return false;
+    if (close(out.fd) != 0) {
+      out.fd = -1;
+      error = "can't write " + target.string() + ": " + std::strerror(errno);
+      return finish(false);
     }
+    out.fd = -1;
   }
-  return true;
+  return finish(true);
 }

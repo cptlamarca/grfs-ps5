@@ -44,6 +44,11 @@ class IsoScreen : public rex::ui::ImGuiDialog {
   void Search();
   void Extract(const Image& image);
   uint32_t PollPad();
+  // Extraction by the payload loader's process (the PS5 slows an app's own
+  // writes after its first GBs); `handled` false without a loader.
+  bool ExtractWithPayload(const std::filesystem::path& image, const std::filesystem::path& target,
+                          bool& handled, std::string& error);
+  std::atomic<bool> via_payload_{false};
 
   // The wallpaper: the game's skull (assets/iso_background.png, in the app).
   std::unique_ptr<rex::ui::ImmediateTexture> background_;
@@ -73,4 +78,8 @@ class IsoScreen : public rex::ui::ImGuiDialog {
   State drawn_state_ = State::kChoosing;
   float highlight_row_ = 0.0f;
   float shown_progress_ = 0.0f;
+  // The extraction's speed (MB/s), sampled each second.
+  float speed_ = 0.0f;
+  double speed_sample_at_ = -1.0;
+  uint64_t speed_sample_done_ = 0;
 };

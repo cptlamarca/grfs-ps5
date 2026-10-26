@@ -40,9 +40,20 @@ add_executable(grfs src/main.cpp src/grfs_app.cpp src/achievements_ui.cpp src/ac
     src/trophy_sound.cpp)
 rexglue_setup_target(grfs GPU_PLUGINS xenos)
 # The ISO screen's wallpaper, built into the app (.incbin).
+# The ISO extractor payload (payload/iso_extractor.cpp, with
+# src/disc_image.cpp), a plain payload ELF built into the app with it.
+set(GRFS_ISO_PAYLOAD ${CMAKE_CURRENT_BINARY_DIR}/grfs-iso-extractor.elf)
+add_custom_command(OUTPUT ${GRFS_ISO_PAYLOAD}
+    COMMAND ${CMAKE_CXX_COMPILER} -O2 -std=c++20 -o ${GRFS_ISO_PAYLOAD}
+            ${CMAKE_CURRENT_SOURCE_DIR}/payload/iso_extractor.cpp
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/disc_image.cpp
+    DEPENDS payload/iso_extractor.cpp src/disc_image.cpp src/disc_image.h
+    COMMENT "Building the ISO extractor payload")
+add_custom_target(grfs_iso_payload DEPENDS ${GRFS_ISO_PAYLOAD})
+add_dependencies(grfs grfs_iso_payload)
 set_source_files_properties(src/iso_screen.cpp PROPERTIES
-    COMPILE_DEFINITIONS "GRFS_ISO_BACKGROUND=\"${CMAKE_CURRENT_SOURCE_DIR}/assets/iso_background.png\""
-    OBJECT_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/assets/iso_background.png)
+    COMPILE_DEFINITIONS "GRFS_ISO_BACKGROUND=\"${CMAKE_CURRENT_SOURCE_DIR}/assets/iso_background.png\";GRFS_ISO_PAYLOAD=\"${GRFS_ISO_PAYLOAD}\""
+    OBJECT_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/assets/iso_background.png;${GRFS_ISO_PAYLOAD}")
 if(REXSDK_DIR AND TARGET imgui)
     # SDK source tree: ImGui (built into the runtime) and xxHash (rex/hash.h)
     # are not on the public include path the way the installed SDK bundles them.

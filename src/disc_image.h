@@ -27,6 +27,8 @@ const DiscFile* FindRootFile(const std::vector<DiscFile>& files, const std::stri
 
 struct ExtractProgress {
   std::atomic<uint64_t> done{0};
+  // Time spent reading the image and writing the files (nanoseconds).
+  std::atomic<uint64_t> read_ns{0}, write_ns{0};
   std::atomic<bool> cancel{false};
 };
 

@@ -5,9 +5,17 @@
 
 #include <algorithm>
 #include <cctype>
+#include <chrono>
 #include <cstdio>
 #include <cmath>
 #include <cstring>
+
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
+#include <unistd.h>
+
+#include <fstream>
 
 #include <imgui.h>
 
@@ -36,6 +44,9 @@ constexpr char kDiscordUrl[] = "https://discord.gg/pmK6zDYQSP";
 // Files the game's disc has at its root: the game and its AI module.
 constexpr char kGameFile[] = "default.xex";
 constexpr char kAiFile[] = "AICLASS_X360_F.xex";
+// The payload loader (etaHEN, elfldr, ...) and the extractor payload's files.
+constexpr uint16_t kPayloadPort = 9021;
+constexpr char kPayloadFolder[] = "/data/grfs-iso";
 
 // ScePadData's buttons (as src/input/ps5/ps5_input_driver.cpp of the SDK).
 constexpr uint32_t kPadUp = 0x10, kPadDown = 0x40;
@@ -188,6 +199,19 @@ __asm__(".section .rodata\n"
         ".globl grfs_iso_background_end\n"
         "grfs_iso_background_end:\n"
         ".previous\n");
+// The extractor payload (payload/iso_extractor.cpp), built with the app.
+__asm__(".section .rodata\n"
+        ".balign 16\n"
+        ".hidden grfs_iso_payload\n"
+        ".globl grfs_iso_payload\n"
+        "grfs_iso_payload:\n"
+        ".incbin \"" GRFS_ISO_PAYLOAD "\"\n"
+        ".hidden grfs_iso_payload_end\n"
+        ".globl grfs_iso_payload_end\n"
+        "grfs_iso_payload_end:\n"
+        ".previous\n");
+extern "C" const uint8_t grfs_iso_payload[];
+extern "C" const uint8_t grfs_iso_payload_end[];
 extern "C" const uint8_t grfs_iso_background[];
 extern "C" const uint8_t grfs_iso_background_end[];
 
@@ -262,7 +286,12 @@ void IsoScreen::Search() {
 void IsoScreen::Extract(const Image& image) {
   state_ = State::kExtracting;
   progress_.done = 0;
+  progress_.read_ns = 0;
+  progress_.write_ns = 0;
   progress_.cancel = false;
+  speed_ = 0.0f;
+  speed_sample_at_ = -1.0;
+  via_payload_ = false;
   total_ = 0;
   {
     std::lock_guard<std::mutex> lock(mutex_);
@@ -273,6 +302,9 @@ void IsoScreen::Extract(const Image& image) {
     const bool portuguese = IsPortuguese();
     std::vector<DiscFile> files;
     std::string error;
+    // Written where the storage has the folder: through the app's /app0
+    // mount, writes slow to a few MB a second.
+    const std::filesystem::path target = StorageFolder(game_folder_);
     bool ok = ListDiscImage(image.path, files, error);
     if (ok && (!FindRootFile(files, kGameFile) || !FindRootFile(files, kAiFile))) {
       ok = false;
@@ -286,8 +318,8 @@ void IsoScreen::Extract(const Image& image) {
       }
       total_ = total;
       std::error_code ec;
-      std::filesystem::create_directories(game_folder_, ec);
-      std::filesystem::space_info space = std::filesystem::space(game_folder_, ec);
+      std::filesystem::create_directories(target, ec);
+      std::filesystem::space_info space = std::filesystem::space(target, ec);
       if (!ec && space.available < total + (256u << 20)) {
         ok = false;
         error = (portuguese ? "Espaço insuficiente: a extração precisa de "
@@ -297,14 +329,23 @@ void IsoScreen::Extract(const Image& image) {
       }
     }
     if (ok) {
-      REXLOG_INFO("Extracting {} into {}", image.path.string(), game_folder_.string());
-      ok = ExtractDiscImage(
-          image.path, files, game_folder_, kGameFile, progress_,
-          [this](const std::string& path) {
-            std::lock_guard<std::mutex> lock(mutex_);
-            current_file_ = path;
-          },
-          error);
+      bool handled = false;
+      ok = ExtractWithPayload(image.path, target, handled, error);
+      if (!handled) {
+        REXLOG_INFO("Extracting {} into {} in the app", image.path.string(), target.string());
+        const auto start = std::chrono::steady_clock::now();
+        ok = ExtractDiscImage(
+            image.path, files, target, kGameFile, progress_,
+            [this](const std::string& path) {
+              std::lock_guard<std::mutex> lock(mutex_);
+              current_file_ = path;
+            },
+            error);
+        const double seconds =
+            std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+        REXLOG_INFO("Extracted {:.2f} GB in {:.0f} s ({:.1f} MB/s)", progress_.done / 1e9,
+                    seconds, progress_.done / 1e6 / std::max(seconds, 0.001));
+      }
     }
     if (!ok) {
       REXLOG_ERROR("Disc image {}: {}", image.path.string(), error);
@@ -313,6 +354,110 @@ void IsoScreen::Extract(const Image& image) {
     }
     state_ = ok ? State::kDone : State::kFailed;
   });
+}
+
+bool IsoScreen::ExtractWithPayload(const std::filesystem::path& image,
+                                   const std::filesystem::path& target, bool& handled,
+                                   std::string& error) {
+  handled = false;
+  // Only into a folder the payload can see (not the app's own /app0).
+  if (target.string().compare(0, 5, "/app0") == 0) {
+    return false;
+  }
+  std::error_code ec;
+  std::filesystem::create_directories(kPayloadFolder, ec);
+  const std::filesystem::path folder = kPayloadFolder;
+  std::filesystem::remove(folder / "status.txt", ec);
+  std::filesystem::remove(folder / "cancel", ec);
+  const std::string id = std::to_string(
+      std::chrono::steady_clock::now().time_since_epoch().count() ^ uintptr_t(this));
+  {
+    std::ofstream out(folder / "request.txt", std::ios::trunc);
+    out << id << "\n" << image.string() << "\n" << target.string() << "\n" << kGameFile << "\n";
+    if (!out) {
+      return false;
+    }
+  }
+
+  // The payload, to the loader.
+  const int sock = socket(AF_INET, SOCK_STREAM, 0);
+  if (sock < 0) {
+    return false;
+  }
+  sockaddr_in address = {};
+  address.sin_family = AF_INET;
+  address.sin_port = htons(kPayloadPort);
+  address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+  bool sent = connect(sock, reinterpret_cast<sockaddr*>(&address), sizeof(address)) == 0;
+  for (const uint8_t* at = grfs_iso_payload; sent && at < grfs_iso_payload_end;) {
+    ssize_t n = send(sock, at, size_t(grfs_iso_payload_end - at), 0);
+    sent = n > 0;
+    at += sent ? n : 0;
+  }
+  close(sock);
+  if (!sent) {
+    REXLOG_INFO("No payload loader on port {}: extracting in the app", kPayloadPort);
+    return false;
+  }
+
+  // Its status, from the file it rewrites.
+  auto read_status = [&](std::string& state, uint64_t& done, uint64_t& total, std::string& line) {
+    std::ifstream in(folder / "status.txt");
+    std::string status_id;
+    if (!(in >> state >> status_id) || status_id != id) {
+      return false;
+    }
+    if (state != "error") {
+      in >> done >> total;
+    }
+    in.ignore(1 << 20, '\n');
+    std::getline(in, line);
+    return true;
+  };
+  std::string state, line;
+  uint64_t done = 0, total = 0;
+  const auto sent_at = std::chrono::steady_clock::now();
+  while (!read_status(state, done, total, line)) {
+    if (std::chrono::steady_clock::now() - sent_at > std::chrono::seconds(10)) {
+      // (if it starts after all, it stops)
+      std::ofstream(folder / "cancel");
+      REXLOG_WARN("The extractor payload didn't start: extracting in the app");
+      return false;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+  }
+  handled = true;
+  via_payload_ = true;
+  REXLOG_INFO("Extracting {} into {} with the payload", image.string(), target.string());
+  const auto start = std::chrono::steady_clock::now();
+  bool cancel_sent = false;
+  for (;;) {
+    if (read_status(state, done, total, line)) {
+      progress_.done = done;
+      total_ = total;
+      if (state == "error") {
+        error = line;
+        return false;
+      }
+      {
+        std::lock_guard<std::mutex> lock(mutex_);
+        current_file_ = line;
+      }
+      if (state == "done") {
+        break;
+      }
+    }
+    if (progress_.cancel && !cancel_sent) {
+      std::ofstream(folder / "cancel");
+      cancel_sent = true;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(250));
+  }
+  const double seconds =
+      std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+  REXLOG_INFO("Extracted {:.2f} GB in {:.0f} s ({:.1f} MB/s) with the payload", done / 1e9,
+              seconds, done / 1e6 / std::max(seconds, 0.001));
+  return true;
 }
 
 uint32_t IsoScreen::PollPad() {
@@ -705,11 +850,38 @@ void IsoScreen::OnDraw(ImGuiIO& io) {
       }
       ImGui::SetWindowFontScale(font_scale * 0.65f);
       ImGui::SetCursorPos(ImVec2(left, bar_b.y + 18.0f * scale));
-      ImGui::TextColored(WithAlpha(kText, state_appear), "%s / %s", Gigabytes(done).c_str(),
-                         Gigabytes(total).c_str());
+      // The speed, over the last second.
+      if (speed_sample_at_ < 0.0 || now - speed_sample_at_ >= 1.0) {
+        if (speed_sample_at_ >= 0.0) {
+          speed_ = float(double(done - speed_sample_done_) / (now - speed_sample_at_) / 1e6);
+        }
+        speed_sample_at_ = now;
+        speed_sample_done_ = done;
+      }
+      char speed[160];
+      std::snprintf(speed, sizeof(speed), "%s / %s   %.0f MB/s", Gigabytes(done).c_str(),
+                    Gigabytes(total).c_str(), speed_);
+      ImGui::TextColored(WithAlpha(kText, state_appear), "%s", speed);
       ImGui::SetCursorPosX(left);
       ImGui::PushTextWrapPos(right);
       ImGui::TextColored(WithAlpha(kDimText, state_appear), "%s", file.c_str());
+      // How it's extracting: the payload at full speed, or the app, slowed.
+      ImGui::SetCursorPos(ImVec2(left, ImGui::GetCursorPosY() + 16.0f * scale));
+      if (via_payload_) {
+        ImGui::TextColored(WithAlpha(kAccent, state_appear), "%s",
+                           portuguese ? "Extração rápida pelo carregador de payloads (porta 9021)."
+                                      : "Fast extraction through the payload loader (port 9021).");
+      } else if (state == State::kExtracting && progress_.done > 0) {
+        ImGui::TextColored(WithAlpha(kDimText, state_appear), "%s",
+                           portuguese ? "Sem carregador de payloads, o PS5 deixa o jogo gravar "
+                                        "devagar depois dos primeiros GB. Com o etaHEN ou o "
+                                        "elfldr ativo (porta 9021), a extração fica muito mais "
+                                        "rápida: cancele, ative um deles e tente de novo."
+                                      : "Without a payload loader, the PS5 slows the game's "
+                                        "writes after its first GBs. With etaHEN or elfldr "
+                                        "running (port 9021) it's much faster: cancel, start "
+                                        "one of them and try again.");
+      }
       ImGui::PopTextWrapPos();
     }
     if (state == State::kFailed) {
