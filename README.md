@@ -42,6 +42,15 @@ are included — you need your own copy. See [CREDITS.md](CREDITS.md).
 - No Uplay: passport and linked account always on.
 - Ghost Feed news, donors and a "help keep me active" screen with a QR code,
   from the server (`src/news_hooks.cpp`, `src/support_screen.cpp`).
+- Without the game's files, a screen before the game lists the .iso files on
+  the console and USB drives and extracts the chosen one (its own XDVDFS
+  reader, `src/disc_image.cpp`, `src/iso_screen.cpp`). The PS5 slows an app's
+  own writes to a few MB a second after its first GBs, so the extraction is
+  handed to a payload (`payload/iso_extractor.cpp`) sent to the payload
+  loader on port 9021 (etaHEN, elfldr...), which writes at the drive's full
+  speed; without a loader the app extracts by itself, slowly.
+- The port's screens (ISO, trophies, help, donors) on the game's skull art,
+  animated; earned trophies first.
 
 ## Building
 

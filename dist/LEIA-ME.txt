@@ -6,12 +6,21 @@ de Xbox 360 do Ghost Recon: Future Soldier (extraídos da ISO).
 INSTALAÇÃO
 1. Instale pela RecompStore (ou copie a pasta PPSA95210 para /data/homebrew/
    do PS5 por FTP).
-2. Extraia a ISO do jogo no PC (por exemplo com extract-xiso) e copie TODO o
-   conteúdo para a pasta assets/ do app:
-     /data/homebrew/PPSA95210/assets/default.xex  (ou Assets/)
-     /data/homebrew/PPSA95210/assets/AICLASS_X360_F.xex
-     /data/homebrew/PPSA95210/assets/Language/ ... (e as demais pastas)
-   O nome "default.xex" precisa estar em letras minúsculas.
+2. Os arquivos do jogo, de um destes jeitos:
+   a) Pela tela do app (mais fácil): copie o arquivo .iso do jogo para
+      /data/homebrew/PPSA95210/, /data/ ou a raiz de um pendrive/HD externo
+      e abra o jogo. Sem os arquivos, aparece uma tela que lista as ISOs
+      encontradas: escolha a do jogo e aperte X. Os arquivos são extraídos
+      para a pasta assets/ e o jogo inicia. Com o etaHEN ou o elfldr ativo
+      (carregador de payloads na porta 9021) a extração leva cerca de 1
+      minuto; sem ele, o PS5 deixa o app gravar devagar e leva muito mais.
+      Depois você pode apagar a ISO.
+   b) À mão: extraia a ISO no PC (por exemplo com extract-xiso) e copie TODO
+      o conteúdo para a pasta assets/ do app:
+        /data/homebrew/PPSA95210/assets/default.xex  (ou Assets/)
+        /data/homebrew/PPSA95210/assets/AICLASS_X360_F.xex
+        /data/homebrew/PPSA95210/assets/Language/ ... (e as demais pastas)
+      O nome "default.xex" precisa estar em letras minúsculas.
 3. Abra o jogo. Na primeira vez ele ajusta os textos dos arquivos de idioma
    (os originais ficam guardados como .orig) e compila os shaders que já vêm
    na pasta shaders/ do app (a primeira abertura demora um pouco mais).
@@ -32,7 +41,10 @@ Future Soldier é marca da Ubisoft. Veja CREDITS.md.
 GHOST RECON: FUTURE SOLDIER - NATIVE PS5 PORT (unofficial fan project)
 
 This package does NOT include the game. You need the files of YOUR OWN Xbox
-360 copy of Ghost Recon: Future Soldier (extracted from the ISO): copy all of
-them into the app's assets/ folder (default.xex lowercase), then start it.
+360 copy of Ghost Recon: Future Soldier. Put the game's .iso in the app's folder, /data/
+or a USB drive's root and start the app: a screen lists it, X extracts it
+into assets/ (about a minute with etaHEN or elfldr running, port 9021) and
+starts the game. Or copy the files extracted from the ISO into the app's
+assets/ folder yourself (default.xex lowercase).
 Multiplayer -> Connection: "Local Network" or "Online (VPS)".
 Not affiliated with Ubisoft, Sony or Microsoft.
