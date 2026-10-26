@@ -6,8 +6,8 @@
 // The file has one message per line, its fields separated by tabs:
 //   YYYY-MM-DD HH:MM <tab> category <tab> author <tab> title <tab> text
 // with "\n", "\t" and "\\" escaped. The category (SP, MP, CIS, WEB, MOB, XBLA
-// or nothing) picks the feed's tab. When the server's /version.txt names
-// another release than this one, a message about it comes first.
+// or nothing) picks the feed's tab. When the server's /version.txt names a
+// newer release than this one, a message about it comes first.
 
 #include <algorithm>
 #include <chrono>
@@ -103,6 +103,35 @@ std::vector<News> ParseNews(const std::string& body) {
 }
 
 
+// Whether release `a` ("v1.2.3") is newer than `b`; false if either isn't one.
+bool NewerRelease(const std::string& a, const std::string& b) {
+  auto parse = [](const std::string& text, std::vector<int>& parts) {
+    if (text.size() < 2 || text[0] != 'v') {
+      return false;
+    }
+    int value = 0;
+    bool digits = false;
+    for (size_t i = 1; i <= text.size(); ++i) {
+      if (i < text.size() && text[i] >= '0' && text[i] <= '9') {
+        value = value * 10 + (text[i] - '0');
+        digits = true;
+      } else if (i == text.size() || text[i] == '.') {
+        if (!digits) {
+          return false;
+        }
+        parts.push_back(value);
+        value = 0;
+        digits = false;
+      } else {
+        return false;
+      }
+    }
+    return true;
+  };
+  std::vector<int> x, y;
+  return parse(a, x) && parse(b, y) && x > y;
+}
+
 // Under news_mutex.
 void StartFetch() {
   if (news_fetching) {
@@ -116,7 +145,7 @@ void StartFetch() {
     std::string latest;
     if (ok && HttpGet(url.substr(0, url.rfind('/')) + "/version.txt", latest)) {
       latest.erase(latest.find_last_not_of(" \r\n") + 1);
-      if (latest.rfind("v", 0) == 0 && latest != GRFS_VERSION) {
+      if (NewerRelease(latest, GRFS_VERSION)) {
         bool portuguese = rex::cvar::Query<uint32_t>("user_language") == 9;
         auto now = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
         std::tm local{};
