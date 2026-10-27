@@ -119,4 +119,7 @@ The app folder lands in `out/ps5/ps5-app/PPSA95210`.
 
 See [CREDITS.md](CREDITS.md) for the full list.
 
+## License
+The port's code is under the [GPL-3.0](LICENSE). ReXGlue and the other projects keep their own licenses. None of these cover the game, its artwork or its music.
+
 *An unofficial fan project, not affiliated with or endorsed by Ubisoft, Microsoft or Sony. No game files are included.*
