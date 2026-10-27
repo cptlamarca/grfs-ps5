@@ -21,11 +21,11 @@ Get the latest version from **[Releases](../../releases/latest)** or from the do
 - Rendered at 2080x1200 and upscaled to 4K with AMD FSR, gameplay at 30 FPS and menus at up to 60 FPS
 - PlayStation button prompts and DualSense controller diagrams
 - DualSense rumble, adaptive triggers (R2 a gun's trigger, L2 a light resistance) and light bar
-- Trophies, from the game's UPLAY menu entry, earned ones first
+- Trophies, from the main menu, earned ones first
 - System Link over your LAN, or over the internet through the project's relay server ("Online (VPS)"), PS5 and PC in the same match
 - Multiplayer progression in System Link: class XP, ranks and the decision points' item choices, kept on the server for each console
 - Attachment credits (one per rank) and the attachments you bought, kept on the server too
-- No Uplay needed: the Uplay Passport and linked account are always on
+- No online pass or account linking needed: those checks always pass
 - Saves backed up to the server and restored on a new install
 - Ghost Feed news, with a notice when a newer release is out
 - Installs the game from your own `.iso`, found on the console or a USB drive
