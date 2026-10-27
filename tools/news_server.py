@@ -63,7 +63,7 @@ RANKS = [0, 1000, 3500, 7000, 11500, 17000, 23500, 31500, 40500, 50500, 61500, 7
          317000, 342000, 368000, 394500, 422000, 450500, 479500, 509500, 540000, 571500, 603500,
          636500, 670000, 704500, 739500, 775000, 811500, 848500, 886000, 924500, 963500, 1003000,
          1043000, 1084000, 1125500, 1167000, 1208500]
-RELEASES = "https://api.github.com/repos/lamarkingru/grfs-ps5/releases/latest"
+RELEASES = "https://api.github.com/repos/cptlamarca/grfs-ps5/releases/latest"
 SHADER_NAME = re.compile(r"^[0-9A-F]{8}\.(xsh|(fsi|fbo)\.vk\.xpso)$")
 
 

@@ -161,9 +161,9 @@ void StartFetch() {
                        latest;
         notice.text = std::string(portuguese ? "Você tem a " : "You have ") + GRFS_VERSION +
                       (portuguese ? ". Atualize pela RecompStore ou em "
-                                    "github.com/lamarkingru/grfs-ps5"
+                                    "github.com/cptlamarca/grfs-ps5"
                                   : ". Update from the RecompStore or "
-                                    "github.com/lamarkingru/grfs-ps5");
+                                    "github.com/cptlamarca/grfs-ps5");
         items.insert(items.begin(), std::move(notice));
       }
     }
