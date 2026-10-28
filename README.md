@@ -2,6 +2,7 @@
 
 **Tom Clancy's Ghost Recon: Future Soldier (Xbox 360) running natively on a jailbroken PS5**, upscaled with FSR, with PlayStation buttons, DualSense features, trophies and System Link multiplayer over the internet.
 
+
 ![Gameplay on the PS5](docs/screenshots/gameplay.jpg)
 
 | PS5 and PC in one match through the relay | Title screen |
@@ -14,7 +15,11 @@
 > All the credit goes to them. Go star the original projects and support them.
 
 ## Download
-Get the latest version from **[Releases](../../releases/latest)** or from the download page, **[grfs-ps5.duckdns.org](https://grfs-ps5.duckdns.org)**.
+Get the latest version from **[Releases](../../releases/latest)** , RecompStore
+
+[![Verified developer on RecompStore](https://recompstore.com/assets/press/verified-dark.svg)](https://recompstore.com/dev/cptlamarca) 
+
+or from the download page, **[grfs-ps5.duckdns.org](https://grfs-ps5.duckdns.org)**.
 
 ## What's in it
 - The campaign and multiplayer recompiled to run natively on the PS5
