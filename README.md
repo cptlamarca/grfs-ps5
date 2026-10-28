@@ -55,7 +55,7 @@ These don't work:
 > [![Discord](https://img.shields.io/badge/Discord-join-5865F2?logo=discord&logoColor=white)](https://discord.gg/pmK6zDYQSP)
 
 ## Install
-1. Download `GRFS-PS5-v1.0.7.zip` from [Releases](../../releases/latest) and copy its `PPSA95210` folder to `/data/homebrew/` on your PS5.
+1. Download `GRFS-PS5-v1.0.8.zip` from [Releases](../../releases/latest) and copy its `PPSA95210` folder to `/data/homebrew/` on your PS5.
 2. Put your disc image in one of these places:
 
 ```
