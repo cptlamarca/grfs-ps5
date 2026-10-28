@@ -51,7 +51,8 @@ constexpr char kPayloadFolder[] = "/data/grfs-iso";
 
 // ScePadData's buttons (as src/input/ps5/ps5_input_driver.cpp of the SDK).
 constexpr uint32_t kPadUp = 0x10, kPadDown = 0x40;
-constexpr uint32_t kPadCircle = 0x2000, kPadCross = 0x4000, kPadSquare = 0x8000;
+constexpr uint32_t kPadTriangle = 0x1000, kPadCircle = 0x2000, kPadCross = 0x4000,
+                   kPadSquare = 0x8000;
 
 constexpr float kFontScaleAt1080 = 0.5f;
 constexpr ImVec4 kText = ImVec4(1.0f, 1.0f, 1.0f, 1.0f);
@@ -104,7 +105,8 @@ std::filesystem::path StorageFolder(const std::filesystem::path& folder) {
 // the console's storage and USB drives.
 std::vector<std::filesystem::path> SearchFolders() {
   const std::filesystem::path app = rex::filesystem::GetExecutableFolder();
-  std::vector<std::filesystem::path> folders = {app};
+  // (by its storage path: the payload doesn't see the app's /app0)
+  std::vector<std::filesystem::path> folders = {StorageFolder(app)};
 #if defined(__PROSPERO__)
   folders.push_back(StorageFolder(app).parent_path());
   folders.push_back("/data");
@@ -130,7 +132,7 @@ std::string Gigabytes(uint64_t bytes) {
   return text;
 }
 
-enum class Glyph { kCross, kCircle, kSquare };
+enum class Glyph { kCross, kCircle, kSquare, kTriangle };
 
 // A DualSense button: a white disc with its symbol.
 void DrawGlyph(ImDrawList* draw, ImVec2 c, float r, Glyph glyph) {
@@ -142,6 +144,9 @@ void DrawGlyph(ImDrawList* draw, ImVec2 c, float r, Glyph glyph) {
     draw->AddLine(ImVec2(c.x - s, c.y + s), ImVec2(c.x + s, c.y - s), ink, t);
   } else if (glyph == Glyph::kCircle) {
     draw->AddCircle(c, r * 0.5f, ink, 24, t);
+  } else if (glyph == Glyph::kTriangle) {
+    draw->AddTriangle(ImVec2(c.x, c.y - s * 1.1f), ImVec2(c.x + s * 1.1f, c.y + s * 0.8f),
+                      ImVec2(c.x - s * 1.1f, c.y + s * 0.8f), ink, t);
   } else {
     draw->AddRect(ImVec2(c.x - s, c.y - s), ImVec2(c.x + s, c.y + s), ink, 0.0f, 0, t);
   }
@@ -291,8 +296,28 @@ void DrawSkullBackground(ImDrawList* draw, rex::ui::ImmediateTexture* texture, f
 
 bool IsoScreen::HasGameFiles(const std::filesystem::path& folder) {
   std::error_code ec;
+  if (std::filesystem::exists(folder / kGameFile, ec)) {
+    return true;
+  }
+  // The disc's own name is Default.xex, which the game doesn't look for
+  // (extracted by hand, or by v1.0.7's extraction): renamed.
+  for (const auto& entry : std::filesystem::directory_iterator(
+           folder, std::filesystem::directory_options::skip_permission_denied, ec)) {
+    const std::string name = entry.path().filename().string();
+    std::string lower = name;
+    std::transform(lower.begin(), lower.end(), lower.begin(),
+                   [](unsigned char c) { return char(std::tolower(c)); });
+    if (lower == kGameFile) {
+      const std::filesystem::path storage = StorageFolder(folder);
+      std::filesystem::rename(storage / name, storage / kGameFile, ec);
+      REXLOG_INFO("{} renamed to {}: {}", name, kGameFile, ec ? ec.message() : "ok");
+      break;
+    }
+  }
   return std::filesystem::exists(folder / kGameFile, ec);
 }
+
+bool IsoScreen::Portuguese() const { return IsPortuguese() != language_swapped_; }
 
 IsoScreen::IsoScreen(rex::ui::ImGuiDrawer* imgui_drawer,
                      rex::ui::ImmediateDrawer* immediate_drawer, ImFont* font, ImFont* title_font,
@@ -365,7 +390,7 @@ void IsoScreen::Extract(const Image& image) {
     error_.clear();
   }
   worker_ = std::thread([this, image] {
-    const bool portuguese = IsPortuguese();
+    const bool portuguese = Portuguese();
     std::vector<DiscFile> files;
     std::string error;
     // Written where the storage has the folder: through the app's /app0
@@ -412,6 +437,11 @@ void IsoScreen::Extract(const Image& image) {
         REXLOG_INFO("Extracted {:.2f} GB in {:.0f} s ({:.1f} MB/s)", progress_.done / 1e9,
                     seconds, progress_.done / 1e6 / std::max(seconds, 0.001));
       }
+    }
+    if (ok && !HasGameFiles(game_folder_)) {
+      ok = false;
+      error = (portuguese ? "A extração terminou sem o " : "The extraction ended without ") +
+              std::string(kGameFile) + ".";
     }
     if (!ok) {
       REXLOG_ERROR("Disc image {}: {}", image.path.string(), error);
@@ -567,7 +597,10 @@ uint32_t IsoScreen::PollPad() {
 void IsoScreen::OnDraw(ImGuiIO& io) {
   const uint32_t pressed = PollPad();
   const State state = state_;
-  const bool portuguese = IsPortuguese();
+  if (pressed & kPadTriangle) {
+    language_swapped_ = !language_swapped_;
+  }
+  const bool portuguese = Portuguese();
   if (state == State::kChoosing) {
     if (pressed & kPadUp) {
       selected_ = std::max(selected_ - 1, 0);
@@ -596,7 +629,8 @@ void IsoScreen::OnDraw(ImGuiIO& io) {
       Search();
       state_ = State::kChoosing;
     }
-  } else if (state == State::kDone && !done_called_) {
+  } else if (state == State::kDone && !done_called_ && ImGui::GetTime() - done_at_ >= 3.0) {
+    // (after a few seconds of the finishing message)
     done_called_ = true;
     if (worker_.joinable()) {
       worker_.join();
@@ -613,8 +647,14 @@ void IsoScreen::OnDraw(ImGuiIO& io) {
     shown_at_ = now;
   }
   if (state != drawn_state_) {
+    // (the progress stays on as the extraction finishes)
+    if (!(drawn_state_ == State::kExtracting && state == State::kDone)) {
+      state_at_ = now;
+    }
+    if (state == State::kDone) {
+      done_at_ = now;
+    }
     drawn_state_ = state;
-    state_at_ = now;
   }
   const float t = float(now - shown_at_);
   const float appear = EaseOut(std::clamp(t / 0.8f, 0.0f, 1.0f));
@@ -884,6 +924,24 @@ void IsoScreen::OnDraw(ImGuiIO& io) {
                                         "one of them and try again.");
       }
       ImGui::PopTextWrapPos();
+      // At 100%: the last files being written and the game starting.
+      if (state == State::kDone || (total && done >= total)) {
+        const float pulse = 0.5f + 0.5f * std::sin(float(now) * 4.0f);
+        const char* text = portuguese
+                               ? "Finalizando... Não feche o jogo nem desligue o console."
+                               : "Finishing... Don't close the game or turn the console off.";
+        ImGui::SetWindowFontScale(font_scale * 0.8f);
+        const ImVec2 size = ImGui::CalcTextSize(text);
+        const float pad = 18.0f * scale;
+        const ImVec2 a(left, ImGui::GetCursorPosY() + 24.0f * scale);
+        const ImVec2 b(a.x + size.x + pad * 2, a.y + size.y + pad * 2);
+        draw->AddRectFilled(a, b, IM_COL32(255, 170, 40, int((40 + 30 * pulse) * state_appear)),
+                            10.0f * scale);
+        draw->AddRect(a, b, IM_COL32(255, 190, 70, int((140 + 100 * pulse) * state_appear)),
+                      10.0f * scale, 0, 2.5f * scale);
+        ImGui::SetCursorPos(ImVec2(a.x + pad, a.y + pad));
+        ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.55f, state_appear), "%s", text);
+      }
     }
     if (state == State::kFailed) {
       std::string error;
@@ -923,7 +981,8 @@ void IsoScreen::OnDraw(ImGuiIO& io) {
       ImGui::TextColored(WithAlpha(kText, card_alpha), "%s", kDiscordLink);
     }
 
-    // The buttons.
+    // The buttons (Triangle: the other language).
+    const std::string language = portuguese ? "English" : "Português";
     ImGui::SetWindowFontScale(font_scale * 0.75f);
     if (state == State::kChoosing) {
       std::vector<std::pair<Glyph, std::string>> hints;
@@ -931,11 +990,14 @@ void IsoScreen::OnDraw(ImGuiIO& io) {
         hints.emplace_back(Glyph::kCross, portuguese ? "Extrair e jogar" : "Extract and play");
       }
       hints.emplace_back(Glyph::kSquare, portuguese ? "Procurar de novo" : "Search again");
+      hints.emplace_back(Glyph::kTriangle, language);
       DrawHints(draw, left, hint_y, scale, hints);
     } else if (state == State::kExtracting) {
-      DrawHints(draw, left, hint_y, scale, {{Glyph::kCircle, portuguese ? "Cancelar" : "Cancel"}});
+      DrawHints(draw, left, hint_y, scale,
+                {{Glyph::kCircle, portuguese ? "Cancelar" : "Cancel"}, {Glyph::kTriangle, language}});
     } else if (state == State::kFailed) {
-      DrawHints(draw, left, hint_y, scale, {{Glyph::kCross, portuguese ? "Voltar" : "Back"}});
+      DrawHints(draw, left, hint_y, scale,
+                {{Glyph::kCross, portuguese ? "Voltar" : "Back"}, {Glyph::kTriangle, language}});
     }
     if (font_) {
       ImGui::PopFont();

@@ -55,6 +55,9 @@ class IsoScreen : public rex::ui::ImGuiDialog {
   void Search();
   void Extract(const Image& image);
   uint32_t PollPad();
+  // The console's language, or the other one after Triangle.
+  bool Portuguese() const;
+  std::atomic<bool> language_swapped_{false};
   // Extraction by the payload loader's process (the PS5 slows an app's own
   // writes after its first GBs); `handled` false without a loader.
   bool ExtractWithPayload(const std::filesystem::path& image, const std::filesystem::path& target,
@@ -85,7 +88,7 @@ class IsoScreen : public rex::ui::ImGuiDialog {
 
   // Animations: time since shown, since the state last changed, the list's
   // highlight (sliding to the selected row) and the progress bar.
-  double shown_at_ = -1.0, state_at_ = 0.0;
+  double shown_at_ = -1.0, state_at_ = 0.0, done_at_ = 0.0;
   State drawn_state_ = State::kChoosing;
   float highlight_row_ = 0.0f;
   float shown_progress_ = 0.0f;

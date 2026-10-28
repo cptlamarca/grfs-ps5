@@ -243,7 +243,7 @@ bool ExtractDiscImage(const std::filesystem::path& image, const std::vector<Disc
   if (last_file) {
     order.push_back(last_file);
     // An earlier, interrupted extraction's: it would say this one is whole.
-    std::filesystem::remove(folder / last_file->path, ec);
+    std::filesystem::remove(folder / last, ec);
   }
 
   // The chunks to copy, in order: each file's data in pieces of kChunk.
@@ -310,7 +310,8 @@ bool ExtractDiscImage(const std::filesystem::path& image, const std::vector<Disc
       error = "cancelled";
       return finish(false);
     }
-    const std::filesystem::path target = folder / std::filesystem::path(file->path);
+    const std::filesystem::path target =
+        folder / std::filesystem::path(file == last_file ? last : file->path);
     if (file->directory) {
       std::filesystem::create_directories(target, ec);
       if (ec) {

@@ -33,8 +33,9 @@ struct ExtractProgress {
 };
 
 // Extracts `files` of the image into `folder`; `on_file` gets each file's
-// path as it starts. `last` (a root file name, any case) is written last, so
-// that its presence means a whole extraction. False with an error message
+// path as it starts. `last` (a root file name, any case) is written last,
+// named as given (the disc's Default.xex as default.xex), so that its
+// presence means a whole extraction. False with an error message
 // if it fails or is cancelled.
 bool ExtractDiscImage(const std::filesystem::path& image, const std::vector<DiscFile>& files,
                       const std::filesystem::path& folder, const std::string& last,
