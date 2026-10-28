@@ -322,6 +322,13 @@ const NAMES = {"":"(nenhuma)", MP:"Multijogador", SP:"Campanha", CIS:"CIS", WEB:
 let news = [];
 const el = (tag, props, ...kids) => { const e = document.createElement(tag);
   Object.assign(e, props || {}); kids.forEach(k => e.append(k)); return e; };
+// The server's times are UTC ("YYYY-MM-DD HH:MM"), shown in this browser's time zone.
+function local(t) {
+  const d = new Date((t || "").replace(" ", "T") + ":00Z");
+  if (isNaN(d)) return t || "";
+  const p = n => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
 function field(label, input) { return el("div", {}, el("label", {textContent: label}), input); }
 function render() {
   const list = document.getElementById("list"); list.replaceChildren();
@@ -371,7 +378,7 @@ function renderPlayers() {
         field("Status", el("input", {value: p.banned ? "BANIDO" : "ativo", readOnly: true}))),
       el("div", {className: "row"},
         field("XP total", el("input", {value: total, readOnly: true})),
-        field("Último acesso", el("input", {value: (p.last_seen || "") + "  " + (p.ip || ""), readOnly: true}))),
+        field("Último acesso", el("input", {value: local(p.last_seen) + "  " + (p.ip || ""), readOnly: true}))),
       el("div", {className: "row"}, ...xp),
       el("div", {className: "row"}, field("Motivo", reason)),
       el("div", {className: "actions"},
@@ -435,12 +442,12 @@ function renderStats(st) {
                      ...rows.map(r => el("tr", {}, ...r.map((v, i) => el("td", {textContent: v, className: head[i][1] ? "n" : ""})))))
                 : el("p", {className: "hint", textContent: "Ninguém."}));
   box.append(table("Na sala do online agora", [["Jogador"], ["Endereço"], ["Desde"]],
-                   st.room.map(m => [m.who, m.address, m.since])));
+                   st.room.map(m => [m.who, m.address, local(m.since)])));
   const who = [["Console"], ["Vezes", 1], ["Primeira"], ["Última"]];
   box.append(table("Enviaram shaders (a cada 10 min de jogo)", who,
-                   st.uploads.map(e => [e.who, e.count, e.first, e.last])));
+                   st.uploads.map(e => [e.who, e.count, local(e.first), local(e.last)])));
   box.append(table("Baixaram shaders (a cada abertura do jogo)", who,
-                   st.downloads.map(e => [e.who, e.count, e.first, e.last])));
+                   st.downloads.map(e => [e.who, e.count, local(e.first), local(e.last)])));
 }
 function renderRanking(rows) {
   const box = document.getElementById("ranking"); box.replaceChildren();
